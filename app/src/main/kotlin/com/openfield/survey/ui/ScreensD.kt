@@ -81,6 +81,7 @@ fun TextEditorScreen(
     onSave: (String) -> String?
 ) {
     var text by remember { mutableStateOf(initial) }
+    var error by remember { mutableStateOf<String?>(null) }
     ScreenFrame(vm, title, showStatus = false) {
         Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             InfoText(help)
