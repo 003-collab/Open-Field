@@ -2,6 +2,7 @@ package com.openfield.core.device
 
 import com.openfield.core.gnss.*
 import com.openfield.core.json.*
+import kotlin.math.pow
 
 /**
  * Abstraction over a JavaScript engine so the core stays dependency-free. The Android app supplies a Rhino
@@ -27,6 +28,8 @@ interface ScriptRuntime {
  *     { type: "nmea", sentence: "$GNGGA,...*hh" }           // fed to the standard NMEA tracker
  *     { type: "fix", lat, lon, altMsl, geoidSep, solution: "RTK_FIXED"|"RTK_FLOAT"|..., sats, hdop, pdop, vdop,
  *       sigmaLat, sigmaLon, sigmaAlt, diffAge, station }   // direct position, any field optional except lat/lon
+ *     { type: "baseline", baseId: "1234", base: {x,y,z}, d: {x,y,z}, sigma: {x,y,z} }   // RTK vector, ECEF metres; or ned: {n,e,d},
+ *       sigmaNed: {n,e,d} for a vector in the local frame at the base; or cov: [xx,xy,xz,yy,yz,zz]. Attached to the next fixes for 2.5 s.
  *     { type: "line", text: "..." }                          // shown in the receiver console
  *
  * This lets users support binary protocols (UBX, Trimble GSOF, Septentrio SBF, ...) by decoding in JavaScript.
@@ -69,6 +72,7 @@ class ScriptReceiverDriver(
                 }
                 "line" -> sink.rawLine(m["text"].asStr())
                 "fix" -> snapshotFrom(m)?.let(sink::snapshot)
+                "baseline" -> baselineFrom(m)?.let(sink::baseline)
             }
         }
     }
@@ -85,6 +89,27 @@ class ScriptReceiverDriver(
             m["sigmaLat"].asDoubleOrNull(), m["sigmaLon"].asDoubleOrNull(), m["sigmaAlt"].asDoubleOrNull(),
             m["diffAge"].asDoubleOrNull(), m["station"].asStrOrNull(), m["speed"].asDoubleOrNull(), m["course"].asDoubleOrNull()
         )
+    }
+
+    /**
+     * `{type:"baseline", baseId:"1234", base:{x,y,z}, d:{x,y,z}}` (ECEF metres) or `..., ned:{n,e,d}` for a vector in the local frame at the base.
+     * Optional `sigma:{x,y,z}` (ECEF) or `sigmaNed:{n,e,d}` standard deviations, or `cov:[xx,xy,xz,yy,yz,zz]`. The base position is required.
+     */
+    private fun baselineFrom(m: Map<String, Any?>): BaselineVector? {
+        val b = m["base"]?.asObj() ?: return null
+        val base = BasePosition(m["baseId"].asStr("0"), b["x"].asDouble(), b["y"].asDouble(), b["z"].asDouble(), clock(), "driver")
+        if (!base.isValid) return null
+        val cov: List<Double>? = m["cov"]?.asList()?.map { it.asDouble() }?.takeIf { it.size == 6 }
+        m["d"]?.asObj()?.let { d ->
+            val sg = m["sigma"]?.asObj()
+            val c = cov ?: sg?.let { listOf(it["x"].asDouble().pow(2), 0.0, 0.0, it["y"].asDouble().pow(2), 0.0, it["z"].asDouble().pow(2)) }
+            return BaselineVector.fromEcef(base, d["x"].asDouble(), d["y"].asDouble(), d["z"].asDouble(), c, "driver")
+        }
+        m["ned"]?.asObj()?.let { v ->
+            val sg = m["sigmaNed"]?.asObj()
+            return BaselineVector.fromEnu(base, v["e"].asDouble(), v["n"].asDouble(), -v["d"].asDouble(), sg?.get("e").asDoubleOrNull(), sg?.get("n").asDoubleOrNull(), sg?.get("d").asDoubleOrNull(), "driver")
+        }
+        return null
     }
 
     private fun bytesFrom(v: Any?): ByteArray = when (v) {

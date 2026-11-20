@@ -63,6 +63,10 @@ function onData(bytes) {               // bytes: array of ints 0-255
   events.push({ type: "fix", lat: 40.1, lon: -75.2,               // or give a decoded position directly
                altMsl: 100.2, geoidSep: -33.0, solution: "RTK_FIXED",
                sats: 18, hdop: 0.7, sigmaLat: 0.008, sigmaLon: 0.009, sigmaAlt: 0.015 });
+  events.push({ type: "baseline", baseId: "1234",                 // RTK vector, attached to the next fixes for 2.5 s
+               base: { x: 1115000.1, y: -4843000.2, z: 3983000.3 },   // base ARP, ECEF metres (required)
+               d: { x: 10.123, y: 20.456, z: 30.789 },                // or ned: { n, e, d } in the local frame at the base
+               sigma: { x: 0.01, y: 0.01, z: 0.02 } });               // or sigmaNed, or cov: [xx,xy,xz,yy,yz,zz]
   events.push({ type: "line", text: "status text" });             // console only
   return events;
 }
@@ -95,3 +99,13 @@ dependencies, drivers can be unit-tested on a laptop by feeding captured bytes t
 A link is a `Transport` (`open()`, `input`, `output`, `close()`). `TcpTransport` and `BluetoothTransport` are the two shipped.
 To add USB serial, implement `Transport` over a library such as usb-serial-for-android and add a branch for
 `ConnectionType.USB_SERIAL` in `AppViewModel.connect()`.
+
+## Baseline vectors
+
+The vector runs from the base antenna reference point to the rover antenna reference point (before antenna height reduction), in ECEF, with an ECEF covariance.
+Where it comes from, in priority order:
+
+1. A `baseline` event from a script driver (decode UBX-NAV-RELPOSNED, GSOF 35/41, SBF `BaseVectorGeod`, and so on yourself). The base position is required because the vector is only meaningful with it.
+2. Derived: for any RTK fixed or float position the app subtracts the base ECEF decoded from RTCM 1005/1006 in the NTRIP stream. Receiver-reported precision is rotated into ECEF.
+
+On a VRS or network mount point the "base" is virtual and may move between epochs; those vectors are recorded but are not baselines to a physical mark, and the CSV shows the base coordinates per row so you can filter them.

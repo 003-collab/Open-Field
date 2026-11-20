@@ -349,6 +349,15 @@ private fun PointDetailDialog(vm: AppViewModel, p: SurveyPoint, onDismiss: () ->
                 p.sdH?.let { KeyValue("Repeatability H (1σ)", fmtNum(vm.unit.fromMeters(it), 3) + u) }
                 p.sdV?.let { KeyValue("Repeatability V (1σ)", fmtNum(vm.unit.fromMeters(it), 3) + u) }
                 p.antennaHeight?.let { KeyValue("ARP height", fmtNum(vm.unit.fromMeters(it), 3) + u) }
+                p.vector?.let { v ->
+                    SectionTitle("Vector from base ${v.baseId}")
+                    KeyValue("Length", fmtNum(vm.unit.fromMeters(v.length), 3) + u, mono = true)
+                    KeyValue("dX", fmtNum(vm.unit.fromMeters(v.dX), 3) + u, mono = true)
+                    KeyValue("dY", fmtNum(vm.unit.fromMeters(v.dY), 3) + u, mono = true)
+                    KeyValue("dZ", fmtNum(vm.unit.fromMeters(v.dZ), 3) + u, mono = true)
+                    v.sigmaXyz()?.let { sg -> KeyValue("σ X/Y/Z", sg.joinToString(" / ") { fmtNum(vm.unit.fromMeters(it), 3) } + u) }
+                    KeyValue("Source", if (v.source == "driver") "Reported by receiver" else "Rover position minus RTCM base")
+                }
                 if (p.timestampMillis > 0) KeyValue("Time", fmtDateTime(p.timestampMillis))
                 if (p.deviceId.isNotEmpty()) KeyValue("Receiver", p.deviceId)
                 val recs = vm.job?.recordsOf(p.name) ?: emptyList()

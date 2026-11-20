@@ -56,6 +56,8 @@ interface DriverIO {
 interface DriverSink {
     fun snapshot(s: GnssSnapshot)
     fun rawLine(line: String)
+    /** A baseline vector reported by the receiver. It is attached to the following position epochs for up to 2.5 s. */
+    fun baseline(v: BaselineVector) {}
 }
 
 /**
@@ -137,7 +139,10 @@ class ReceiverSession(
     private val driver: ReceiverDriver,
     private val listener: ReceiverListener,
     private val autoReconnect: Boolean = true,
-    private val reconnectDelayMs: Long = 3000
+    private val reconnectDelayMs: Long = 3000,
+    /** Supplies the base station position (from the RTCM stream) so RTK positions get a derived baseline vector. */
+    private val baseProvider: (() -> BasePosition?)? = null,
+    private val clock: () -> Long = System::currentTimeMillis
 ) {
     private val running = AtomicBoolean(false)
     private var thread: Thread? = null
@@ -173,9 +178,22 @@ class ReceiverSession(
         override fun write(bytes: ByteArray) { this@ReceiverSession.write(bytes) }
         override fun log(message: String) { listener.onRawLine("# $message") }
     }
+    @Volatile private var lastBaseline: BaselineVector? = null
+    @Volatile private var lastBaselineAt = 0L
+
+    private fun withBaseline(s: GnssSnapshot): GnssSnapshot {
+        if (s.baseline != null) return s
+        val reported = lastBaseline
+        if (reported != null && clock() - lastBaselineAt <= 2500) return s.copy(baseline = reported)
+        val base = baseProvider?.invoke()
+        if (base != null && s.solution.isRtk) return s.copy(baseline = BaselineVector.derive(base, s))
+        return s
+    }
+
     private val sink = object : DriverSink {
-        override fun snapshot(s: GnssSnapshot) = listener.onSnapshot(s)
+        override fun snapshot(s: GnssSnapshot) = listener.onSnapshot(withBaseline(s))
         override fun rawLine(line: String) = listener.onRawLine(line)
+        override fun baseline(v: BaselineVector) { lastBaseline = v; lastBaselineAt = clock() }
     }
 
     private fun loop() {

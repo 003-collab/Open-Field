@@ -33,6 +33,7 @@ import com.openfield.core.io.GeoJsonExport
 import com.openfield.core.io.JobJson
 import com.openfield.core.io.JobXmlExport
 import com.openfield.core.io.LandXmlExport
+import com.openfield.core.io.VectorCsvExport
 import com.openfield.core.survey.PointKind
 import com.openfield.survey.AppViewModel
 import com.openfield.survey.abbr
@@ -127,6 +128,7 @@ fun ImportExportScreen(vm: AppViewModel) {
                     AppButton("GeoJSON (WGS 84)", { save("${job.name}.geojson", GeoJsonExport.export(job)) }, Modifier.fillMaxWidth(), primary = false)
                     AppButton("DXF (points and names)", { save("${job.name}.dxf", DxfExport.export(job, vm.featureCodes)) }, Modifier.fillMaxWidth(), primary = false)
                     AppButton("Trimble JobXML (.jxl)", { save("${job.name}.jxl", JobXmlExport.export(job)) }, Modifier.fillMaxWidth(), primary = false)
+                    AppButton("Vectors (CSV, ECEF + local)", { save("${job.name}_vectors.csv", VectorCsvExport.export(job)) }, Modifier.fillMaxWidth(), primary = false)
                     AppButton("LandXML", { save("${job.name}.xml", LandXmlExport.export(job)) }, Modifier.fillMaxWidth(), primary = false)
                     AppButton("OpenField job file (backup)", { save("${job.name}.ofjob", JobJson.toJson(job)) }, Modifier.fillMaxWidth(), primary = false)
                 }

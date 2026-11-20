@@ -26,7 +26,9 @@ data class AveragedPosition(
     val epochs: Int, val rejected: Int,
     val sdE: Double, val sdN: Double, val sdZ: Double,
     val meanHdop: Double?, val meanPdop: Double?, val meanSigmaH: Double?, val meanSigmaV: Double?,
-    val minSatellites: Int, val solution: SolutionType, val maxDiffAge: Double?
+    val minSatellites: Int, val solution: SolutionType, val maxDiffAge: Double?,
+    /** Mean baseline vector of the accepted epochs, when every epoch had one from the same base. */
+    val vector: com.openfield.core.gnss.BaselineVector? = null
 ) {
     /** Horizontal repeatability (1 sigma) in the job unit. */
     val sdH get() = hypot(sdE, sdN)
@@ -51,8 +53,10 @@ class PositionAverager(
     private var minSats = Int.MAX_VALUE
     private var worst: SolutionType? = null
     private var maxAge: Double? = null
+    private val vectors = ArrayList<com.openfield.core.gnss.BaselineVector>()
 
     fun reset() {
+        vectors.clear()
         count = 0; mE = 0.0; mN = 0.0; mZ = 0.0; m2E = 0.0; m2N = 0.0; m2Z = 0.0; sLat = 0.0; sLon = 0.0; sH = 0.0
         sHdop = 0.0; nHdop = 0; sPdop = 0.0; nPdop = 0; sSigH = 0.0; nSigH = 0; sSigV = 0.0; nSigV = 0; minSats = Int.MAX_VALUE; worst = null; maxAge = null
     }
@@ -78,6 +82,7 @@ class PositionAverager(
         minSats = minOf(minSats, s.satellitesUsed)
         if (worst == null || s.solution.rank < worst!!.rank) worst = s.solution
         s.diffAgeSeconds?.let { maxAge = max(maxAge ?: 0.0, it) }
+        s.baseline?.let { vectors.add(it) }
         return true
     }
 
@@ -91,7 +96,8 @@ class PositionAverager(
             sd(m2E), sd(m2N), sd(m2Z),
             if (nHdop > 0) sHdop / nHdop else null, if (nPdop > 0) sPdop / nPdop else null,
             if (nSigH > 0) sSigH / nSigH else null, if (nSigV > 0) sSigV / nSigV else null,
-            minSats, worst ?: SolutionType.NONE, maxAge
+            minSats, worst ?: SolutionType.NONE, maxAge,
+            if (vectors.size == count) com.openfield.core.gnss.BaselineVector.average(vectors) else null
         )
     }
 }
@@ -213,7 +219,7 @@ class SurveyEngine(
             solution = r.solution, hdop = r.meanHdop, pdop = r.meanPdop, sigmaH = r.meanSigmaH, sigmaV = r.meanSigmaV,
             satellites = r.minSatellites, epochs = r.epochs, antennaHeight = activeArp,
             sdH = unit.toMeters(r.sdH), sdV = unit.toMeters(r.sdZ), timestampMillis = System.currentTimeMillis(),
-            note = spec.note, deviceId = deviceId
+            note = spec.note, deviceId = deviceId, vector = r.vector
         )
         active = null; averager = null
         val existing = job.find(name)
@@ -270,7 +276,7 @@ class SurveyEngine(
             name = job.freeName(), code = spec.code, kind = PointKind.MEASURED, method = MeasureMethod.CONTINUOUS,
             e = ground.e, n = ground.n, z = ground.z, latDeg = s.latDeg, lonDeg = s.lonDeg, ellipsoidalHeight = s.ellipsoidalHeight - arp,
             solution = s.solution, hdop = s.hdop, pdop = s.pdop, sigmaH = s.horizontalPrecision, sigmaV = s.verticalPrecision,
-            satellites = s.satellitesUsed, epochs = 1, antennaHeight = arp, timestampMillis = System.currentTimeMillis(), note = spec.note, deviceId = deviceId
+            satellites = s.satellitesUsed, epochs = 1, antennaHeight = arp, timestampMillis = System.currentTimeMillis(), note = spec.note, deviceId = deviceId, vector = s.baseline
         )
         job.add(p)
         lastContinuous = ground to s.receivedAtMillis

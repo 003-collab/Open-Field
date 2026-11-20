@@ -641,6 +641,108 @@ fun main() {
         eq(doc.getElementsByTagName("Classification").item(1).textContent, "Control"); eq(doc.getElementsByTagName("WGS84").length, 1)
     }
 
+    // ---------------- baseline vectors ----------------
+    val baseLat = 40.0; val baseLon = -75.0; val baseH = 50.0
+    val baseEcef = Ellipsoid.WGS84.toEcef(baseLat * DEG, baseLon * DEG, baseH)
+    val base0 = BasePosition("1234", baseEcef[0], baseEcef[1], baseEcef[2])
+    check("RTCM 1005 base position is read from a stream, with CRC protection") {
+        val frame = RtcmBaseTracker.encode1005(1234, baseEcef[0], baseEcef[1], baseEcef[2])
+        val t = RtcmBaseTracker()
+        t.feed(byteArrayOf(0x24, 0xD3.toByte(), 0x00, 0x05, 1, 2))                       // garbage that looks like a frame start
+        val bad = frame.copyOf(); bad[10] = (bad[10].toInt() xor 0x40).toByte()
+        t.feed(bad); ok(t.base == null, "corrupted frame is rejected")
+        val half = frame.size / 2
+        t.feed(frame, half); ok(t.base == null); t.feed(frame.copyOfRange(half, frame.size))
+        val b = t.base!!; eq(b.id, "1234")
+        near(b.x, baseEcef[0], 1e-4); near(b.y, baseEcef[1], 1e-4); near(b.z, baseEcef[2], 1e-4)
+        val south = RtcmBaseTracker.encode1005(7, -2000000.0, 3000000.0, -5000000.5)       // negative values need sign extension
+        t.feed(south); near(t.base!!.x, -2000000.0, 1e-4); near(t.base!!.z, -5000000.5, 1e-4); eq(t.base!!.id, "7")
+        eq(RtcmBaseTracker.crc24q("123456789".toByteArray(), 0, 9), 0xCDE703, )
+    }
+    check("baseline vectors: derive, local frame, covariance, averaging") {
+        val roverEcef = Ellipsoid.WGS84.toEcef(baseLat * DEG, baseLon * DEG, baseH).let { b ->
+            // rover 300 m east, 400 m north, 2 m up of the base in the base's local frame
+            val v = BaselineVector.fromEnu(base0, 300.0, 400.0, 2.0)
+            doubleArrayOf(b[0] + v.dX, b[1] + v.dY, b[2] + v.dZ)
+        }
+        val g = Ellipsoid.WGS84.fromEcef(roverEcef[0], roverEcef[1], roverEcef[2])
+        val s = GnssSnapshot(1.0, 0L, g[0] / DEG, g[1] / DEG, g[2], 0.0, SolutionType.RTK_FIXED, 12, 1.0, 1.5, 1.0, 0.01, 0.01, 0.02, 1.0, null, null, null)
+        val v = BaselineVector.derive(base0, s)
+        val enu = v.enu(); near(enu[0], 300.0, 1e-6); near(enu[1], 400.0, 1e-6); near(enu[2], 2.0, 1e-6)
+        near(v.length, sqrt(300.0 * 300 + 400.0 * 400 + 4.0), 1e-6)
+        near(v.roverX, roverEcef[0], 1e-6); near(v.roverZ, roverEcef[2], 1e-6)
+        val cov = v.cov!!
+        near(cov[0] + cov[3] + cov[5], 0.01 * 0.01 + 0.01 * 0.01 + 0.02 * 0.02, 1e-12, "covariance trace is rotation invariant")
+        ok(cov[1] != 0.0 || cov[2] != 0.0, "rotated covariance has off-diagonal terms")
+        val a = v.copy(dX = v.dX + 0.002); val b = v.copy(dX = v.dX - 0.002, dZ = v.dZ + 0.004)
+        val m = BaselineVector.average(listOf(a, b))!!; near(m.dX, v.dX, 1e-9); near(m.dZ, v.dZ + 0.002, 1e-9)
+        ok(BaselineVector.average(listOf(a, b.copy(baseId = "9"))) == null, "different base: no average")
+        ok(BaselineVector.average(listOf(a, b.copy(baseX = b.baseX + 5.0))) == null, "moved base: no average")
+        ok(runCatching { BaselineVector("1", 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, listOf(1.0)) }.isFailure, "covariance must have 6 values")
+    }
+    check("a session attaches derived and driver-reported baselines to RTK fixes") {
+        val sim = NmeaSimulator(40.0, -75.0, 10.0); val snaps = CopyOnWriteArrayList<GnssSnapshot>()
+        val session = ReceiverSession(StreamTransport(sim.asStream(rateHz = 50.0), ByteArrayOutputStream()), NmeaDriver(),
+            object : ReceiverListener { override fun onSnapshot(snapshot: GnssSnapshot) { snaps.add(snapshot) } }, autoReconnect = false, baseProvider = { base0 })
+        session.start(); ok(waitFor { snaps.size >= 3 }); session.stop()
+        val s = snaps.first { it.baseline != null }
+        eq(s.baseline!!.baseId, "1234"); ok(s.baseline!!.length in 30.0..50.0, "plausible length ${s.baseline!!.length}")
+        near(s.baseline!!.roverX, Ellipsoid.WGS84.toEcef(s.latDeg * DEG, s.lonDeg * DEG, s.ellipsoidalHeight)[0], 1e-6)
+        // a driver that reports its own vector wins over the derived one
+        val reported = BaselineVector("rx", 1.0, 2.0, 3.0, 0.5, 0.5, 0.5, null, "driver")
+        val out = CopyOnWriteArrayList<GnssSnapshot>()
+        val drv = object : ReceiverDriver {
+            override val id = "t"
+            override fun onData(buf: ByteArray, len: Int, sink: DriverSink) { sink.baseline(reported); sink.snapshot(snaps[0].copy(baseline = null)) }
+        }
+        val s2 = ReceiverSession(StreamTransport(ByteArrayInputStream(ByteArray(8)), ByteArrayOutputStream()), drv,
+            object : ReceiverListener { override fun onSnapshot(snapshot: GnssSnapshot) { out.add(snapshot) } }, autoReconnect = false, baseProvider = { base0 })
+        s2.start(); ok(waitFor { out.isNotEmpty() }); s2.stop()
+        eq(out[0].baseline, reported)
+    }
+    check("script drivers can report baselines, in ECEF or local NED") {
+        val events = listOf<Any?>(
+            mapOf("type" to "baseline", "baseId" to "55", "base" to mapOf("x" to baseEcef[0], "y" to baseEcef[1], "z" to baseEcef[2]), "d" to mapOf("x" to 10.0, "y" to 20.0, "z" to 30.0), "sigma" to mapOf("x" to 0.01, "y" to 0.02, "z" to 0.03)),
+            mapOf("type" to "baseline", "baseId" to "55", "base" to mapOf("x" to baseEcef[0], "y" to baseEcef[1], "z" to baseEcef[2]), "ned" to mapOf("n" to 400.0, "e" to 300.0, "d" to -2.0), "sigmaNed" to mapOf("n" to 0.01, "e" to 0.01, "d" to 0.02)),
+            mapOf("type" to "baseline", "baseId" to "55", "d" to mapOf("x" to 1.0, "y" to 1.0, "z" to 1.0))     // no base: ignored
+        )
+        val rt = object : ScriptRuntime {
+            override fun load(source: String) {}
+            override fun hasFunction(name: String) = false
+            override fun call(function: String, vararg args: Any?): Any? = events
+            override fun expose(name: String, functions: Map<String, (List<Any?>) -> Any?>) {}
+            override fun close() {}
+        }
+        val got = ArrayList<BaselineVector>()
+        val sink = object : DriverSink { override fun snapshot(s: GnssSnapshot) {}; override fun rawLine(line: String) {}; override fun baseline(v: BaselineVector) { got.add(v) } }
+        val drv = ScriptReceiverDriver("js", rt, ""); drv.onOpen(object : DriverIO { override fun write(bytes: ByteArray) {}; override fun log(message: String) {} })
+        drv.onData(ByteArray(1), 1, sink)
+        eq(got.size, 2)
+        near(got[0].dX, 10.0, 1e-12); near(got[0].sigmaXyz()!![1], 0.02, 1e-12)
+        val enu = got[1].enu(); near(enu[0], 300.0, 1e-6); near(enu[1], 400.0, 1e-6); near(enu[2], 2.0, 1e-6, "NED down -2 means 2 m up")
+    }
+    check("measured points record the averaged vector; it survives saving, averaging and export") {
+        val job = Job("V", utm18); val stored = ArrayList<SurveyPoint>()
+        val eng = makeEngine(job, SurveyStyle("s", "s", topoEpochs = 3), stored)
+        val sim = NmeaSimulator(40.0, -75.0, 10.0)
+        val driver = NmeaDriver()
+        val sink = object : DriverSink { override fun snapshot(s: GnssSnapshot) { val s1 = s.copy(sigmaLat = 0.01, sigmaLon = 0.01, sigmaAlt = 0.02, solution = SolutionType.RTK_FIXED); eng.onSnapshot(s1.copy(baseline = BaselineVector.derive(base0, s1))) }; override fun rawLine(line: String) {} }
+        val spec = MeasureSpec(name = "V1", antennaHeightMeasured = 2.0, heightMethod = HeightMeasurement.VERTICAL_TO_ARP, onDuplicate = null)
+        fun measure() { eng.startMeasure(spec); repeat(5) { val b = sim.epoch().toByteArray(); driver.onData(b, b.size, sink) } }
+        measure(); val p = stored[0]; val v = p.vector!!
+        eq(v.baseId, "1234"); ok(v.length > 30.0, "len ${v.length}"); ok(v.cov != null, "cov")
+        near(v.roverX - v.baseX, v.dX, 1e-9)
+        measure(); eng.resolveDuplicate(DuplicateAction.AVERAGE)
+        ok(job.find("V1")!!.vector != null, "avg vector"); ok(job.find("V1")!!.method == MeasureMethod.AVERAGED, "avg method ${job.find("V1")!!.method}")
+        val back = JobJson.fromJson(JobJson.toJson(job))
+        val bv = back.observations.first().vector!!
+        near(bv.dX, v.dX, 1e-9); near(bv.baseZ, v.baseZ, 1e-9); eq(bv.cov, v.cov); eq(bv.baseId, "1234")
+        val csv = VectorCsvExport.export(job).trim().lines()
+        eq(csv.size, 1 + job.observations.size); ok(csv[0].startsWith("Point,Observation,Class,Base ID"), "hdr"); ok(csv[1].startsWith("V1,1,Normal,1234,"), csv[1])
+        eq(csv[1].split(",").size, csv[0].split(",").size)
+        ok(csv.last().startsWith("V1,3,"), csv.last())
+    }
+
     println()
     println("$passed passed, ${failures.size} failed")
     if (failures.isNotEmpty()) { failures.forEach { println("  - $it") }; System.exit(1) }

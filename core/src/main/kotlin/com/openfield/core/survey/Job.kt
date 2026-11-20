@@ -5,6 +5,7 @@ import kotlin.math.pow
 import kotlin.math.sqrt
 
 import com.openfield.core.geo.CoordinateSystem
+import com.openfield.core.gnss.BaselineVector
 import com.openfield.core.gnss.SolutionType
 
 enum class PointKind(val label: String) { MEASURED("Measured"), CONTROL("Control"), DESIGN("Design"), KEYED_IN("Keyed in") }
@@ -45,6 +46,8 @@ data class SurveyPoint(
     val timestampMillis: Long = 0L,
     val note: String = "",
     val deviceId: String = "",
+    /** RTK baseline vector (base to rover antenna) with its covariance, for network adjustment. Null for keyed-in, imported and non-RTK points. */
+    val vector: BaselineVector? = null,
     val classification: Classification = Classification.NORMAL,
     /** True for observations replaced by an Overwrite. Kept in the job as an audit trail, never used as a position or exported. */
     val deleted: Boolean = false
@@ -158,6 +161,7 @@ class Job(
             latDeg = mean { it.latDeg }, lonDeg = mean { it.lonDeg }, ellipsoidalHeight = mean { it.ellipsoidalHeight },
             solution = if (sources.all { it.solution == last.solution }) last.solution else sources.mapNotNull { it.solution }.minByOrNull { it.rank },
             hdop = mean { it.hdop }, pdop = mean { it.pdop }, sigmaH = rms { it.sigmaH }, sigmaV = rms { it.sigmaV },
+            vector = if (sources.all { it.vector != null }) BaselineVector.average(sources.map { it.vector!! }) else null,
             satellites = sources.mapNotNull { it.satellites }.minOrNull(), epochs = sources.sumOf { it.epochs },
             sdH = sdH, sdV = sdV, timestampMillis = System.currentTimeMillis(), note = "Average of $k observations"
         )

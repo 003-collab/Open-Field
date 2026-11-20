@@ -487,7 +487,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val driver = try {
             dev.createDriver({ RhinoRuntime() }, { store.readDriver(it) })
         } catch (e: Exception) { message = e.message ?: "Could not start the receiver driver"; simulator = null; return }
-        val s = ReceiverSession(transport, driver, rxListener, autoReconnect = dev.connection != ConnectionType.SIMULATOR)
+        rtcmBase.reset()
+        val s = ReceiverSession(transport, driver, rxListener, autoReconnect = dev.connection != ConnectionType.SIMULATOR, baseProvider = { rtcmBase.base })
         session = s
         s.start()
     }
@@ -508,16 +509,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ---------------- real-time corrections ----------------
+    /** Reference-station position decoded from RTCM 1005/1006 in the correction stream; used to form RTK vectors. */
+    private val rtcmBase = RtcmBaseTracker()
+    val baseStation: BasePosition? get() = rtcmBase.base
+
     fun startNtrip() {
         val p = activeNtrip ?: run { message = "Choose a real-time connection first (Real-time connection screen)"; return }
         stopNtrip()
+        rtcmBase.reset()
         val accepts = activeDevice.acceptsRtcm
         val c = NtripClient(p)
         c.setGgaProvider { ggaNow() }
         ntrip = c
         ntripBytes = 0
         c.start(object : NtripListener {
-            override fun onData(buf: ByteArray, len: Int) { if (accepts) session?.write(buf, len) }
+            override fun onData(buf: ByteArray, len: Int) { rtcmBase.feed(buf, len); if (accepts) session?.write(buf, len) }
             override fun onState(state: NtripState, message: String?) { main.post { ntripState = state; ntripMessage = message } }
             override fun onStats(bytesReceived: Long) { main.post { ntripBytes = bytesReceived } }
         })

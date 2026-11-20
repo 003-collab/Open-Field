@@ -2,6 +2,7 @@ package com.openfield.core.io
 
 import com.openfield.core.geo.CoordinateSystem
 import com.openfield.core.geo.GeoidModel
+import com.openfield.core.gnss.BaselineVector
 import com.openfield.core.gnss.SolutionType
 import com.openfield.core.json.*
 import com.openfield.core.survey.*
@@ -37,6 +38,11 @@ object JobJson {
         m["time"] = p.timestampMillis
         if (p.note.isNotEmpty()) m["note"] = p.note
         if (p.deviceId.isNotEmpty()) m["device"] = p.deviceId
+        p.vector?.let { v ->
+            m["vector"] = linkedMapOf<String, Any?>(
+                "base" to v.baseId, "baseXyz" to listOf(v.baseX, v.baseY, v.baseZ), "dXyz" to listOf(v.dX, v.dY, v.dZ), "source" to v.source
+            ).also { vm -> v.cov?.let { vm["cov"] = it } }
+        }
         if (p.classification != Classification.NORMAL) m["class"] = p.classification.name
         if (p.deleted) m["deleted"] = true
         return m
@@ -62,6 +68,11 @@ object JobJson {
                 satellites = o["sats"]?.asInt(), epochs = o["epochs"].asInt(), antennaHeight = o["antennaHeight"].asDoubleOrNull(),
                 sdH = o["sdH"].asDoubleOrNull(), sdV = o["sdV"].asDoubleOrNull(), timestampMillis = o["time"].asLong(),
                 note = o["note"].asStr(), deviceId = o["device"].asStr(),
+                vector = o["vector"]?.asObj()?.let { vo ->
+                    val b = vo["baseXyz"].asList().map { it.asDouble() }; val d = vo["dXyz"].asList().map { it.asDouble() }
+                    val c = if (vo.containsKey("cov")) vo["cov"].asList().map { it.asDouble() } else null
+                    if (b.size == 3 && d.size == 3 && (c == null || c.size == 6)) BaselineVector(vo["base"].asStr(), b[0], b[1], b[2], d[0], d[1], d[2], c, vo["source"].asStr("saved")) else null
+                },
                 classification = runCatching { Classification.valueOf(o["class"].asStr()) }.getOrDefault(Classification.NORMAL),
                 deleted = o["deleted"].asBool(false)
             ))

@@ -14,7 +14,9 @@ data class GnssSnapshot(
     val sigmaLat: Double?, val sigmaLon: Double?, val sigmaAlt: Double?,
     val diffAgeSeconds: Double?, val referenceStation: String?,
     val speedMps: Double?, val courseDeg: Double?,
-    val satellites: List<SatelliteInfo> = emptyList()
+    val satellites: List<SatelliteInfo> = emptyList(),
+    /** RTK vector from the base to this position, when known (reported by the driver, or derived from the RTCM base position). */
+    val baseline: BaselineVector? = null
 ) {
     /** Height above the WGS-84 ellipsoid = orthometric altitude + geoid separation as reported by the receiver. */
     val ellipsoidalHeight get() = altMsl + geoidSep

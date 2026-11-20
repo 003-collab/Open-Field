@@ -233,3 +233,33 @@ object JobXmlExport {
     }
     private fun x(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
 }
+
+/**
+ * Baseline vectors as CSV, for network adjustment software: one row per observation that has a vector (overwritten ones excluded).
+ * Vectors run from the base reference point to the rover antenna reference point (before antenna height reduction), in ECEF metres.
+ * Sx, Sy, Sz are the standard deviations from the covariance diagonal; Cxy, Cxz, Cyz are the covariances in m^2 (blank when unknown).
+ */
+object VectorCsvExport {
+    fun export(job: Job): String {
+        val sb = StringBuilder("Point,Observation,Class,Base ID,Base X,Base Y,Base Z,dX,dY,dZ,Length,dE,dN,dU,Sx,Sy,Sz,Cxy,Cxz,Cyz,Antenna height,Time UTC\n")
+        fun f(v: Double, dec: Int = 4) = String.format(java.util.Locale.ROOT, "%.${dec}f", v)
+        fun q(s: String) = if (s.any { it == ',' || it == '"' || it == '\n' }) "\"" + s.replace("\"", "\"\"") + "\"" else s
+        val index = HashMap<String, Int>()
+        for (p in job.observations) {
+            val k = (index[p.name] ?: 0) + 1; index[p.name] = k
+            val v = p.vector ?: continue
+            val enu = v.enu(); val sg = v.sigmaXyz(); val c = v.cov
+            sb.append(q(p.name)).append(',').append(k).append(',')
+                .append(if (p.classification == Classification.CHECK) "Check" else if (p.method == MeasureMethod.AVERAGED) "Average" else "Normal").append(',')
+                .append(q(v.baseId)).append(',').append(f(v.baseX)).append(',').append(f(v.baseY)).append(',').append(f(v.baseZ)).append(',')
+                .append(f(v.dX)).append(',').append(f(v.dY)).append(',').append(f(v.dZ)).append(',').append(f(v.length)).append(',')
+                .append(f(enu[0])).append(',').append(f(enu[1])).append(',').append(f(enu[2])).append(',')
+                .append(sg?.let { f(it[0], 5) } ?: "").append(',').append(sg?.let { f(it[1], 5) } ?: "").append(',').append(sg?.let { f(it[2], 5) } ?: "").append(',')
+                .append(c?.let { f(it[1], 8) } ?: "").append(',').append(c?.let { f(it[2], 8) } ?: "").append(',').append(c?.let { f(it[4], 8) } ?: "").append(',')
+                .append(p.antennaHeight?.let { f(it, 3) } ?: "").append(',')
+                .append(if (p.timestampMillis > 0) java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss").withZone(java.time.ZoneOffset.UTC).format(java.time.Instant.ofEpochMilli(p.timestampMillis)) else "")
+                .append('\n')
+        }
+        return sb.toString()
+    }
+}
