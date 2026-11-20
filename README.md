@@ -27,7 +27,9 @@ Any compile errors will most likely be in `app/.../ui/` (Compose API details). I
 
 ## Quick tour
 
-* **Jobs** create a job with a coordinate system (any UTM zone, or your own projection) and units (metres, US survey feet, international feet).
+* **Jobs** New job is a screen: name, description, coordinate system and units.
+* **Coordinate systems > Select from library** works like the controller picker: choose a System and Zone (US State Plane on NAD83(2011) with 126 zones, or any UTM zone), then a geoid model, **Grid or Ground** coordinates (ground scale computed from the project height and location, or overridden) and the distance units. Library geoids (GEOID18 etc.) are imported as NGS/PROJ `.gtx` files; only the area around the project is kept. You can still add your own projections as JSON.
+* **Map** is a tile of its own, and Measure topo, Continuous topo and Stake out show a map beside their form: drag the divider, or use the header buttons for Map / Split / Form. Pan, pinch, double-tap for extents, tap a point for details.
 * **Equipment** choose or add a receiver profile (Bluetooth, TCP, simulator; NMEA or JavaScript driver). **Real-time connection** sets up NTRIP.
 * **Survey styles** hold the quality limits (solution type, HDOP/PDOP, precision, satellites, correction age) and epochs. Epochs failing the limits are never stored.
 * **Measure topo / codes / Observed control / Continuous topo** collect points, reducing antenna height to the ground mark.
@@ -43,7 +45,9 @@ Settings can be exported and imported from **Appearance & layout**.
 
 ## Known limits
 
-* Geoid grids must be imported in the simple ASCII format described in the app. Resample an official geoid to your project area first.
+* Geoid grids are imported as NGS/PROJ `.gtx` (from the library picker) or the simple ASCII format. Trimble `.ggf` files are not read.
+* The library covers US State Plane (statewide and regional zones on TM or Lambert 2SP) and UTM. Zones that use oblique Mercator or Albers (Alaska 1, Michigan Oblique, county systems) are not included yet.
+* No displacement (plate-motion) model such as HTDP is applied; WGS 84 and NAD83(2011) are treated as the same frame.
 * Heights are orthometric only when a geoid is selected; otherwise they are ellipsoidal (a warning appears when a job's geoid grid is missing).
 * Datum transformations are 7-parameter Helmert only (no grid-based NADCON/NTv2). For NAD83 with RTK against CORS, WGS 84 and NAD83 are treated as coincident.
 * Transverse Mercator and Lambert two-parallel projections are provided; others can be added in `core/.../geo/Projection.kt`.
