@@ -743,6 +743,21 @@ fun main() {
         ok(csv.last().startsWith("V1,3,"), csv.last())
     }
 
+    check("JobXML carries each observation's ECEF vector and covariance") {
+        val job = Job("VJ", utm18)
+        val v = BaselineVector("1234", base0.x, base0.y, base0.z, 10.12345, -20.5, 30.25, listOf(1e-4, 1e-5, 2e-5, 2e-4, 3e-5, 4e-4))
+        job.store(SurveyPoint("A", e = 100.0, n = 200.0, z = 10.0, vector = v, latDeg = 40.0, lonDeg = -75.0, ellipsoidalHeight = 10.0), DuplicateAction.STORE_ANOTHER)
+        job.store(SurveyPoint("B", e = 101.0, n = 201.0, z = 10.0), DuplicateAction.STORE_ANOTHER)
+        val xml = JobXmlExport.export(job)
+        val doc = javax.xml.parsers.DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(xml.byteInputStream())
+        val recs = doc.getElementsByTagName("PointRecord"); eq(recs.length, 2)
+        fun tag(n: org.w3c.dom.Element, t: String) = n.getElementsByTagName(t).let { if (it.length == 0) null else it.item(0).textContent }
+        val a = recs.item(0) as org.w3c.dom.Element; val b = recs.item(1) as org.w3c.dom.Element
+        eq(tag(a, "DeltaX"), "10.12345"); eq(tag(a, "DeltaY"), "-20.50000"); eq(tag(a, "DeltaZ"), "30.25000"); eq(tag(a, "RTK_Base"), "1234")
+        near(tag(a, "VCVxy")!!.toDouble(), 1e-5, 1e-15); near(tag(a, "VCVzz")!!.toDouble(), 4e-4, 1e-15); eq(tag(a, "UnitVariance")!!.toDouble(), 1.0)
+        ok(tag(b, "DeltaX") == null && tag(b, "QualityControl2") == null, "points without a vector get no vector elements")
+    }
+
     println()
     println("$passed passed, ${failures.size} failed")
     if (failures.isNotEmpty()) { failures.forEach { println("  - $it") }; System.exit(1) }

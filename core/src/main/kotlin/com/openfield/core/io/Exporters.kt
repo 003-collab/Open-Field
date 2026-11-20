@@ -218,13 +218,25 @@ object JobXmlExport {
         for (p in points) {
             sb.append("    <PointRecord TimeStamp=\"${stamp(p.timestampMillis)}\">\n")
             sb.append("      <Name>${x(p.name)}</Name>\n      <Code>${x(p.code)}</Code>\n")
-            sb.append("      <Method>${x(if (p.method == MeasureMethod.AVERAGED) "Averaged" else if (p.latDeg != null) "RTK" else p.method.label)}</Method>\n")
+            val v = p.vector
+            if (v != null && p.method != MeasureMethod.AVERAGED) sb.append("      <Method>GpsStaticObservation</Method>\n      <SurveyMethod>RTK</SurveyMethod>\n")
+            else sb.append("      <Method>${x(if (p.method == MeasureMethod.AVERAGED) "Averaged" else if (p.latDeg != null) "RTK" else p.method.label)}</Method>\n")
             sb.append("      <Classification>${if (p.classification == Classification.CHECK) "Check" else if (p.kind == PointKind.CONTROL) "Control" else "Normal"}</Classification>\n")
+            if (v != null) {
+                // Base-to-rover vector, ECEF metres, as in Trimble GNSS observation records.
+                sb.append("      <ECEFDeltas>\n        <DeltaX>${String.format(java.util.Locale.ROOT, "%.5f", v.dX)}</DeltaX>\n        <DeltaY>${String.format(java.util.Locale.ROOT, "%.5f", v.dY)}</DeltaY>\n        <DeltaZ>${String.format(java.util.Locale.ROOT, "%.5f", v.dZ)}</DeltaZ>\n      </ECEFDeltas>\n")
+                sb.append("      <RTK_Base>${x(v.baseId)}</RTK_Base>\n")
+            }
             sb.append("      <Grid>\n        <North>${m(p.n)}</North>\n        <East>${m(p.e)}</East>\n        <Elevation>${m(p.z)}</Elevation>\n      </Grid>\n")
             if (p.latDeg != null && p.lonDeg != null) {
                 sb.append("      <WGS84>\n        <Latitude>${d(p.latDeg)}</Latitude>\n        <Longitude>${d(p.lonDeg)}</Longitude>\n")
                 p.ellipsoidalHeight?.let { sb.append("        <Height>${String.format(java.util.Locale.ROOT, "%.5f", it)}</Height>\n") }
                 sb.append("      </WGS84>\n")
+            }
+            p.vector?.cov?.let { c ->
+                fun e(n: String, i: Int) = "        <$n>${String.format(java.util.Locale.ROOT, "%.10e", c[i])}</$n>\n"
+                sb.append("      <QualityControl2>\n").append(e("VCVxx", 0)).append(e("VCVxy", 1)).append(e("VCVxz", 2)).append(e("VCVyy", 3)).append(e("VCVyz", 4)).append(e("VCVzz", 5))
+                    .append("        <UnitVariance>1.0000000000</UnitVariance>\n      </QualityControl2>\n")
             }
             sb.append("    </PointRecord>\n")
         }
