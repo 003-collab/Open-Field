@@ -288,7 +288,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Opens a job file. Returns warnings (for example a missing geoid grid). */
     fun openJob(f: File): List<String> {
         val (j, warnings) = store.loadJob(f)
-        stopContinuous(); engine?.cancelMeasure(); progress = null
+        stopContinuous(); engine?.cancelMeasure(); progress = null; duplicateRequest = null
         job = j; jobFile = f
         pointsRev++
         updateConfig { it.copy(lastJobFile = f.name) }
@@ -312,7 +312,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         pointsRev++
     }
 
-    fun closeJob() { stopContinuous(); engine?.cancelMeasure(); progress = null; job = null; jobFile = null; engine = null; live = null; updateConfig { it.copy(lastJobFile = "") } }
+    fun closeJob() { stopContinuous(); engine?.cancelMeasure(); progress = null; duplicateRequest = null; job = null; jobFile = null; engine = null; live = null; updateConfig { it.copy(lastJobFile = "") } }
 
     private fun persistJob() {
         val j = job ?: return; val f = jobFile ?: return
@@ -322,7 +322,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun deletePoint(name: String) { if (job?.remove(name) == true) { pointsRev++; persistJob() } }
 
-    fun updatePoint(p: SurveyPoint) { job?.add(p, overwrite = true); pointsRev++; persistJob() }
+    fun updatePoint(p: SurveyPoint) { job?.replacePosition(p); pointsRev++; persistJob() }
+
+    /** Deletes one stored observation of a point; [index] is its position in the job's records for that name. */
+    fun deleteObservation(name: String, index: Int) { if (job?.removeRecord(name, index) == true) { pointsRev++; persistJob() } }
+
+    /** A finished measurement whose name already exists, waiting for Store another / Average / Store as check / Overwrite. */
+    var duplicateRequest by mutableStateOf<DuplicateRequest?>(null)
+        private set
+
+    fun resolveDuplicate(action: DuplicateAction?) {
+        duplicateRequest = null
+        engine?.resolveDuplicate(action)
+    }
 
     fun addLine(l: DesignLine) { job?.lines?.add(l); pointsRev++; persistJob() }
     fun deleteLine(l: DesignLine) { job?.lines?.remove(l); pointsRev++; persistJob() }
@@ -335,13 +347,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val j = job ?: return 0
         j.coordinateSystem = cs
         var n = 0
-        for (p in j.points) {
-            val derived = p.method == MeasureMethod.TOPO || p.method == MeasureMethod.OBSERVED_CONTROL || p.method == MeasureMethod.CONTINUOUS
+        // every observation is re-derived, not just each point's position
+        j.transformAll { p ->
+            val derived = p.method == MeasureMethod.TOPO || p.method == MeasureMethod.OBSERVED_CONTROL || p.method == MeasureMethod.CONTINUOUS || p.method == MeasureMethod.AVERAGED
             val lat = p.latDeg; val lon = p.lonDeg; val h = p.ellipsoidalHeight
             if (derived && lat != null && lon != null && h != null) {
                 val g = cs.toLocal(LatLonH(lat, lon, h))
-                j.add(p.copy(e = g.e, n = g.n, z = g.z), overwrite = true); n++
-            }
+                n++; p.copy(e = g.e, n = g.n, z = g.z)
+            } else p
         }
         pointsRev++
         persistJob()
@@ -374,11 +387,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val surveyListener = object : SurveyListener {
         override fun onLive(p: LivePosition) { live = p }
         override fun onProgress(p: MeasureProgress) { progress = p }
-        override fun onPointStored(point: SurveyPoint) { pointsRev++; progress = null; message = "Stored ${point.name}"; persistJob() }
+        override fun onPointStored(point: SurveyPoint) {
+            pointsRev++; progress = null; persistJob()
+            val pos = job?.find(point.name)
+            message = when {
+                point.classification == Classification.CHECK && pos != null -> {
+                    val d = PositionDifference.between(pos, point)
+                    "Stored check of ${point.name}: dH ${fmtDist(d.horizontal)}, dV ${fmtDist(d.dz)} ${unit.abbr()}"
+                }
+                point.method == MeasureMethod.AVERAGED -> "Averaged ${point.name} from ${job?.recordsOf(point.name)?.count { !it.deleted && it.classification == Classification.NORMAL && it.method != MeasureMethod.AVERAGED } ?: 0} observations"
+                else -> "Stored ${point.name}"
+            }
+        }
+        override fun onDuplicate(request: DuplicateRequest) { progress = null; duplicateRequest = request }
         override fun onMessage(text: String) { message = text; if (engine?.isMeasuring != true) progress = null }
     }
 
     private fun rebuildEngine() {
+        duplicateRequest = null
         val j = job
         if (j == null) { engine = null; live = null; return }
         val e = SurveyEngine(j, activeStyle, activeDevice.antenna, activeDevice.id, surveyListener)
@@ -396,13 +422,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun startMeasure(spec: MeasureSpec): String? {
         val e = engine ?: return "Open a job first"
         if (e.isMeasuring) return "A measurement is already running"
-        val wanted = spec.name
-        if (wanted != null && job?.has(wanted) == true) return "Point '$wanted' already exists"
         return try { e.startMeasure(spec); null } catch (ex: IllegalArgumentException) { ex.message } catch (ex: IllegalStateException) { ex.message }
     }
 
     fun finishMeasureEarly() { engine?.finishMeasureEarly() }
-    fun cancelMeasure() { engine?.cancelMeasure(); progress = null }
+    fun cancelMeasure() { engine?.cancelMeasure(); progress = null; duplicateRequest = null }
 
     fun startContinuous(code: String): String? {
         val e = engine ?: return "Open a job first"

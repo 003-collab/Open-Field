@@ -44,11 +44,13 @@ import com.openfield.core.geo.ControlPair
 import com.openfield.core.geo.CalibrationReport
 import com.openfield.core.geo.VerticalAdjustment
 import com.openfield.core.survey.Angles
+import com.openfield.core.survey.Classification
 import com.openfield.core.survey.Cogo
 import com.openfield.core.survey.DesignLine
 import com.openfield.core.survey.MeasureMethod
 import com.openfield.core.survey.MeasureSpec
 import com.openfield.core.survey.PointKind
+import com.openfield.core.survey.PositionDifference
 import com.openfield.core.survey.SurveyPoint
 import com.openfield.survey.AppViewModel
 import com.openfield.survey.abbr
@@ -284,6 +286,7 @@ private fun AddLineDialog(vm: AppViewModel, onDismiss: () -> Unit) {
 
 @Composable
 fun ReviewScreen(vm: AppViewModel) {
+    @Suppress("UNUSED_VARIABLE") val revTop = vm.pointsRev   // the detail dialog below is outside the frame, so subscribe here too
     val job = vm.job
     var q by remember { mutableStateOf("") }
     var detail by remember { mutableStateOf<String?>(null) }
@@ -300,7 +303,8 @@ fun ReviewScreen(vm: AppViewModel) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
                                 Text(p.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                                InfoText("${p.code}  ${p.kind.label} / ${p.method.label}")
+                                val obsCount = job.recordsOf(p.name).count { !it.deleted }
+                                InfoText("${p.code}  ${p.kind.label} / ${p.method.label}" + if (obsCount > 1) "  -  $obsCount observations" else "")
                                 p.solution?.let { s -> Text(s.label, color = LocalAppTheme.current.solutionColor(s), style = MaterialTheme.typography.labelMedium) }
                             }
                             Column(horizontalAlignment = Alignment.End) {
@@ -347,6 +351,26 @@ private fun PointDetailDialog(vm: AppViewModel, p: SurveyPoint, onDismiss: () ->
                 p.antennaHeight?.let { KeyValue("ARP height", fmtNum(vm.unit.fromMeters(it), 3) + u) }
                 if (p.timestampMillis > 0) KeyValue("Time", fmtDateTime(p.timestampMillis))
                 if (p.deviceId.isNotEmpty()) KeyValue("Receiver", p.deviceId)
+                val recs = vm.job?.recordsOf(p.name) ?: emptyList()
+                if (recs.size > 1) {
+                    SectionTitle("Observations (${recs.size})")
+                    recs.forEachIndexed { i, r ->
+                        val d = PositionDifference.between(p, r)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                val kind = when {
+                                    r.deleted -> "Overwritten"
+                                    r.classification == Classification.CHECK -> "Check"
+                                    r.method == MeasureMethod.AVERAGED -> "Average"
+                                    else -> "Normal"
+                                }
+                                Text(kind + (if (r == p) " (position)" else "") + (if (r.timestampMillis > 0) "  " + fmtDateTime(r.timestampMillis) else ""), fontWeight = FontWeight.Medium)
+                                if (r != p) InfoText("dN ${vm.fmtDist(d.dn)}  dE ${vm.fmtDist(d.de)}  dZ ${vm.fmtDist(d.dz)}$u")
+                            }
+                            TextButton(onClick = { vm.deleteObservation(p.name, i) }) { Text("Delete") }
+                        }
+                    }
+                }
                 TextInput(label("point.code"), code, { code = it })
                 TextInput("Note", note, { note = it })
             }
@@ -359,7 +383,7 @@ private fun PointDetailDialog(vm: AppViewModel, p: SurveyPoint, onDismiss: () ->
             }
         }
     )
-    if (confirmDelete) ConfirmDialog("Delete point?", "Delete ${p.name} from this job?", "Delete", { vm.deletePoint(p.name); onDismiss() }, { confirmDelete = false })
+    if (confirmDelete) ConfirmDialog("Delete point?", "Delete ${p.name} and all of its observations from this job?", "Delete", { vm.deletePoint(p.name); onDismiss() }, { confirmDelete = false })
 }
 
 // ------------------------------------------------------------------ cogo

@@ -12,17 +12,21 @@ object JobJson {
 
     fun toJson(job: Job): String = Json.stringify(toMap(job))
 
-    fun toMap(job: Job): Map<String, Any?> = linkedMapOf(
+    fun toMap(job: Job): Map<String, Any?> = linkedMapOf<String, Any?>(
         "format" to "openfield-job", "version" to VERSION,
         "name" to job.name, "description" to job.description, "operator" to job.operator,
         "created" to job.createdMillis, "modified" to job.modifiedMillis,
         "styleId" to job.styleId, "nextPointName" to job.nextPointName,
         "coordinateSystem" to job.coordinateSystem.toMap(),
+        // "points" holds one position per name, as in older files, so earlier versions can still open a job.
         "points" to job.points.map { pointMap(it) },
         "lines" to job.lines.map { l ->
             mapOf("name" to l.name, "e1" to l.e1, "n1" to l.n1, "z1" to l.z1, "e2" to l.e2, "n2" to l.n2, "z2" to l.z2, "startStation" to l.startStation)
         }
-    )
+    ).also { m ->
+        // Only jobs with repeated observations carry the full history, so simple jobs stay identical to earlier files.
+        if (job.hasMultipleObservations) m["observations"] = job.allRecords().map { pointMap(it) }
+    }
 
     private fun pointMap(p: SurveyPoint): Map<String, Any?> {
         val m = linkedMapOf<String, Any?>("name" to p.name, "code" to p.code, "kind" to p.kind.name, "method" to p.method.name, "e" to p.e, "n" to p.n, "z" to p.z)
@@ -33,6 +37,8 @@ object JobJson {
         m["time"] = p.timestampMillis
         if (p.note.isNotEmpty()) m["note"] = p.note
         if (p.deviceId.isNotEmpty()) m["device"] = p.deviceId
+        if (p.classification != Classification.NORMAL) m["class"] = p.classification.name
+        if (p.deleted) m["deleted"] = true
         return m
     }
 
@@ -42,9 +48,10 @@ object JobJson {
         val job = Job(m["name"].asStr("Untitled"), CoordinateSystem.fromMap(m["coordinateSystem"].asObj(), geoidResolver),
             m["description"].asStr(), m["created"].asLong(System.currentTimeMillis()), m["operator"].asStr())
         job.styleId = m["styleId"].asStr()
-        for (pm in m["points"].asList()) {
+        val saved = if (m.containsKey("observations")) m["observations"].asList() else m["points"].asList()
+        for (pm in saved) {
             val o = pm.asObj()
-            job.add(SurveyPoint(
+            job.restore(SurveyPoint(
                 name = o["name"].asStr(), code = o["code"].asStr(),
                 kind = runCatching { PointKind.valueOf(o["kind"].asStr()) }.getOrDefault(PointKind.MEASURED),
                 method = runCatching { MeasureMethod.valueOf(o["method"].asStr()) }.getOrDefault(MeasureMethod.TOPO),
@@ -54,9 +61,12 @@ object JobJson {
                 hdop = o["hdop"].asDoubleOrNull(), pdop = o["pdop"].asDoubleOrNull(), sigmaH = o["sigmaH"].asDoubleOrNull(), sigmaV = o["sigmaV"].asDoubleOrNull(),
                 satellites = o["sats"]?.asInt(), epochs = o["epochs"].asInt(), antennaHeight = o["antennaHeight"].asDoubleOrNull(),
                 sdH = o["sdH"].asDoubleOrNull(), sdV = o["sdV"].asDoubleOrNull(), timestampMillis = o["time"].asLong(),
-                note = o["note"].asStr(), deviceId = o["device"].asStr()
-            ), overwrite = true)
+                note = o["note"].asStr(), deviceId = o["device"].asStr(),
+                classification = runCatching { Classification.valueOf(o["class"].asStr()) }.getOrDefault(Classification.NORMAL),
+                deleted = o["deleted"].asBool(false)
+            ))
         }
+        job.rebuildPositions()
         for (lm in m["lines"].asList()) {
             val o = lm.asObj()
             job.lines.add(DesignLine(o["name"].asStr(), o["e1"].asDouble(), o["n1"].asDouble(), o["z1"].asDoubleOrNull(),

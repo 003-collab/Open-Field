@@ -431,7 +431,7 @@ fun MeasureScreen(vm: AppViewModel, mode: String) {
             SoftKey("Esc", { if (measuring) vm.cancelMeasure() else vm.back() }),
             SoftKey("GNSS", { vm.go(Feature.GNSS_STATUS) }),
             if (measuring) SoftKey("Store now", { vm.finishMeasureEarly() }) else SoftKey("Options", { showOptions = true }, enabled = job != null),
-            SoftKey(if (measuring) "Measuring" else label("action.measure"), { measureNow() }, enabled = job != null && !measuring && vm.live != null && !taken && vm.antennaError == null, primary = true)
+            SoftKey(if (measuring) "Measuring" else label("action.measure"), { measureNow() }, enabled = job != null && !measuring && vm.live != null && vm.antennaError == null, primary = true)
         )
     ) {
         if (job == null) { NoJob(vm); return@ScreenFrame }
@@ -440,10 +440,10 @@ fun MeasureScreen(vm: AppViewModel, mode: String) {
             left = {
                 FormHeader(label("tile.$mode"), vm.isFavorite(mode)) { vm.toggleFavorite(mode) }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextInput(label("point.name"), name, { name = it }, Modifier.weight(1f), error = taken, enabled = !measuring)
+                    TextInput(label("point.name"), name, { name = it }, Modifier.weight(1f), enabled = !measuring)
                     TextInput(label("point.code"), code, { code = it }, Modifier.weight(1f), enabled = !measuring)
                 }
-                if (taken) InfoText("A point with this name already exists", color = t.c(ColorRole.BAD))
+                if (taken) InfoText("A point named $name exists. When the measurement finishes you choose: store another, average, store as check or overwrite.", color = t.c(ColorRole.WARNING))
                 if (mode == Feature.MEASURE_CODES || code.isNotEmpty()) {
                     val matches = vm.featureCodes.let { lib -> if (code.isBlank()) lib.codes else lib.search(code) }.take(24)
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {

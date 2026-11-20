@@ -191,7 +191,7 @@ object LandXmlExport {
  * grid North/East/Elevation, and WGS 84 latitude/longitude/height when the point was measured with GNSS).
  */
 object JobXmlExport {
-    fun export(job: Job, appVersion: String = "1.0", points: List<SurveyPoint> = job.points): String {
+    fun export(job: Job, appVersion: String = "1.0", points: List<SurveyPoint> = job.observations): String {
         val cs = job.coordinateSystem
         val u = cs.unit
         val stamp = fun(ms: Long): String = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss").withZone(java.time.ZoneOffset.UTC)
@@ -218,8 +218,8 @@ object JobXmlExport {
         for (p in points) {
             sb.append("    <PointRecord TimeStamp=\"${stamp(p.timestampMillis)}\">\n")
             sb.append("      <Name>${x(p.name)}</Name>\n      <Code>${x(p.code)}</Code>\n")
-            sb.append("      <Method>${x(if (p.latDeg != null) "RTK" else p.method.label)}</Method>\n")
-            sb.append("      <Classification>${if (p.kind == PointKind.CONTROL) "Control" else "Normal"}</Classification>\n")
+            sb.append("      <Method>${x(if (p.method == MeasureMethod.AVERAGED) "Averaged" else if (p.latDeg != null) "RTK" else p.method.label)}</Method>\n")
+            sb.append("      <Classification>${if (p.classification == Classification.CHECK) "Check" else if (p.kind == PointKind.CONTROL) "Control" else "Normal"}</Classification>\n")
             sb.append("      <Grid>\n        <North>${m(p.n)}</North>\n        <East>${m(p.e)}</East>\n        <Elevation>${m(p.z)}</Elevation>\n      </Grid>\n")
             if (p.latDeg != null && p.lonDeg != null) {
                 sb.append("      <WGS84>\n        <Latitude>${d(p.latDeg)}</Latitude>\n        <Longitude>${d(p.lonDeg)}</Longitude>\n")

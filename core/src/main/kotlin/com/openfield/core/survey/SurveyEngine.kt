@@ -103,7 +103,20 @@ data class MeasureSpec(
     val epochs: Int? = null,
     val antennaHeightMeasured: Double,
     val heightMethod: HeightMeasurement,
-    val note: String = ""
+    val note: String = "",
+    /** Decide up front what to do if [name] already exists; null asks the listener once the measurement is complete. */
+    val onDuplicate: DuplicateAction? = null
+)
+
+/** A finished measurement whose point name already exists, waiting for the user to pick a [DuplicateAction]. */
+data class DuplicateRequest(
+    val point: SurveyPoint,
+    val existing: SurveyPoint,
+    /** [point] relative to [existing], in the job's unit. */
+    val difference: PositionDifference,
+    val observationCount: Int,
+    /** Averaging needs GNSS positions on both sides. */
+    val canAverage: Boolean
 )
 
 data class MeasureProgress(val spec: MeasureSpec, val accepted: Int, val required: Int, val rejected: Int, val lastFailures: List<String>)
@@ -112,6 +125,7 @@ interface SurveyListener {
     fun onLive(p: LivePosition) {}
     fun onProgress(p: MeasureProgress) {}
     fun onPointStored(point: SurveyPoint) {}
+    fun onDuplicate(request: DuplicateRequest) {}
     fun onMessage(text: String) {}
 }
 
@@ -154,8 +168,12 @@ class SurveyEngine(
         continuous?.let { handleContinuous(it, s) }
     }
 
+    private var pending: SurveyPoint? = null
+    val hasPendingDuplicate: Boolean get() = pending != null
+
     fun startMeasure(spec: MeasureSpec) {
         check(active == null) { "A measurement is already running" }
+        check(pending == null) { "Choose what to do with the previous measurement first" }
         val arp = antenna.arpHeight(spec.antennaHeightMeasured, spec.heightMethod)
         val epochs = spec.epochs ?: if (spec.method == MeasureMethod.OBSERVED_CONTROL) style.controlEpochs else style.topoEpochs
         val resolved = spec.copy(epochs = max(1, epochs))
@@ -165,7 +183,7 @@ class SurveyEngine(
         listener.onProgress(MeasureProgress(resolved, 0, resolved.epochs!!, 0, emptyList()))
     }
 
-    fun cancelMeasure() { active = null; averager = null }
+    fun cancelMeasure() { active = null; averager = null; pending = null }
 
     /** Store now with whatever epochs were accepted (e.g. user taps "Store" during an observed control point). */
     fun finishMeasureEarly(): SurveyPoint? {
@@ -198,14 +216,30 @@ class SurveyEngine(
             note = spec.note, deviceId = deviceId
         )
         active = null; averager = null
-        try {
-            job.add(point)
-            listener.onPointStored(point)
-            return point
-        } catch (e: DuplicatePointException) {
-            listener.onMessage(e.message ?: "Duplicate point name")
+        val existing = job.find(name)
+        if (existing != null && spec.onDuplicate == null) {
+            pending = point
+            listener.onDuplicate(
+                DuplicateRequest(point, existing, PositionDifference.between(existing, point), job.recordsOf(name).count { !it.deleted },
+                    canAverage = existing.latDeg != null && point.latDeg != null)
+            )
             return null
         }
+        return try {
+            val stored = job.store(point, spec.onDuplicate ?: DuplicateAction.STORE_ANOTHER)
+            listener.onPointStored(stored); stored
+        } catch (e: IllegalArgumentException) { listener.onMessage(e.message ?: "Could not store the point"); null }
+    }
+
+    /** Applies the user's choice to a measurement waiting after [SurveyListener.onDuplicate]; null discards it. */
+    fun resolveDuplicate(action: DuplicateAction?): SurveyPoint? {
+        val p = pending ?: return null
+        pending = null
+        if (action == null) { listener.onMessage("Discarded the measurement of ${p.name}"); return null }
+        return try {
+            val stored = job.store(p, action)
+            listener.onPointStored(stored); stored
+        } catch (e: IllegalArgumentException) { listener.onMessage(e.message ?: "Could not store the point"); null }
     }
 
     // ---------------- continuous topo ----------------

@@ -16,6 +16,7 @@ import androidx.compose.ui.unit.dp
 import com.openfield.core.config.ColorRole
 import com.openfield.core.config.Feature
 import com.openfield.core.geo.*
+import com.openfield.core.survey.DuplicateAction
 import com.openfield.survey.AppViewModel
 import com.openfield.survey.abbr
 import com.openfield.survey.parseNum
@@ -302,4 +303,40 @@ private fun importGeoidFile(ctx: Context, vm: AppViewModel, uri: Uri, name: Stri
     }
     vm.store.saveGeoid(name, grid.toAscii())
     return "covers ${grid.coverage}"
+}
+
+// ------------------------------------------------------------------ duplicate point names
+
+/**
+ * Shown when a measurement finishes and its point name already exists: compares the new position with the stored one and offers
+ * Store another, Average, Store as check or Overwrite. The choice is explicit (no tap-outside dismissal) so a measurement is never lost by accident.
+ */
+@Composable
+fun DuplicateDialog(vm: AppViewModel) {
+    val r = vm.duplicateRequest ?: return
+    val unit = " " + vm.unit.abbr()
+    AlertDialog(
+        onDismissRequest = {},
+        title = { Text("Point ${r.point.name} already exists") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                InfoText("The new measurement compared with the stored position:")
+                KeyValue("Horizontal", vm.fmtDist(r.difference.horizontal) + unit, mono = true)
+                KeyValue("dN / dE", vm.fmtDist(r.difference.dn) + " / " + vm.fmtDist(r.difference.de) + unit, mono = true)
+                KeyValue("dZ", vm.fmtDist(r.difference.dz) + unit, mono = true)
+                KeyValue("Observations of this name", r.observationCount.toString())
+                Spacer(Modifier.height(4.dp))
+                AppButton("Store another", { vm.resolveDuplicate(DuplicateAction.STORE_ANOTHER) }, Modifier.fillMaxWidth())
+                InfoText("Keeps both. The new observation becomes the point's position.")
+                AppButton("Average", { vm.resolveDuplicate(DuplicateAction.AVERAGE) }, Modifier.fillMaxWidth(), enabled = r.canAverage, primary = false)
+                InfoText(if (r.canAverage) "Keeps all observations and sets the position to the mean of the GNSS observations." else "Needs GNSS observations on both sides, not keyed-in points.")
+                AppButton("Store as check", { vm.resolveDuplicate(DuplicateAction.STORE_AS_CHECK) }, Modifier.fillMaxWidth(), primary = false)
+                InfoText("Keeps the observation for comparison. The position does not change.")
+                AppButton("Overwrite", { vm.resolveDuplicate(DuplicateAction.OVERWRITE) }, Modifier.fillMaxWidth(), primary = false)
+                InfoText("Replaces the earlier observations. They stay in the job as deleted records and are not exported.")
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = { vm.resolveDuplicate(null) }) { Text("Discard measurement") } }
+    )
 }

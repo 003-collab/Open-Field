@@ -256,13 +256,78 @@ fun main() {
         sim.quality = 4; feed(sim, eng, 3); eq(stored.size, 0, "restart means 3 more epochs are not enough")
         feed(sim, eng, 1); eq(stored.size, 1)
     }
-    check("duplicate names refused and reported") {
-        val job = Job("T", utm18); val stored = ArrayList<SurveyPoint>(); val msgs = ArrayList<String>()
-        val eng = makeEngine(job, SurveyStyle("s", "s", topoEpochs = 1), stored, msgs)
+    check("measuring an existing name asks, and nothing is stored until the user chooses") {
+        val job = Job("T", utm18); val stored = ArrayList<SurveyPoint>(); var request: DuplicateRequest? = null
+        val eng = SurveyEngine(job, SurveyStyle("s", "s", topoEpochs = 2), AntennaProfile(), "sim", object : SurveyListener {
+            override fun onPointStored(point: SurveyPoint) { stored.add(point) }
+            override fun onDuplicate(r: DuplicateRequest) { request = r }
+        })
         val sim = NmeaSimulator(40.74844, -73.985664, 30.0, -34.0)
-        eng.startMeasure(MeasureSpec(name = "A1", antennaHeightMeasured = 2.0, heightMethod = HeightMeasurement.VERTICAL_TO_ARP)); feed(sim, eng, 2)
-        eng.startMeasure(MeasureSpec(name = "A1", antennaHeightMeasured = 2.0, heightMethod = HeightMeasurement.VERTICAL_TO_ARP)); feed(sim, eng, 2)
-        eq(stored.size, 1); ok(msgs.any { it.contains("already exists") })
+        val spec = MeasureSpec(name = "A1", antennaHeightMeasured = 2.0, heightMethod = HeightMeasurement.VERTICAL_TO_ARP)
+        eng.startMeasure(spec); feed(sim, eng, 3); eq(stored.size, 1); ok(request == null)
+        eng.startMeasure(spec); feed(sim, eng, 3)
+        eq(stored.size, 1, "second measurement waits"); ok(eng.hasPendingDuplicate); ok(request != null && request!!.canAverage)
+        ok(runCatching { eng.startMeasure(spec) }.isFailure, "cannot start another while one waits")
+        near(request!!.difference.horizontal, 0.0, 0.05)
+        eng.resolveDuplicate(DuplicateAction.STORE_AS_CHECK)
+        eq(stored.size, 2); eq(stored[1].classification, Classification.CHECK)
+        eq(job.points.size, 1); eq(job.observations.size, 2); eq(job.find("A1")!!.classification, Classification.NORMAL)
+        eng.startMeasure(spec); feed(sim, eng, 3); eng.resolveDuplicate(null)
+        eq(job.observations.size, 2, "discarded measurement is not stored"); ok(!eng.hasPendingDuplicate)
+        eng.startMeasure(spec); feed(sim, eng, 3); eng.resolveDuplicate(DuplicateAction.AVERAGE)
+        eq(job.observations.size, 4); eq(job.find("A1")!!.method, MeasureMethod.AVERAGED)
+    }
+    check("store another, check, average and overwrite on one point name") {
+        fun obs(e: Double, n: Double, z: Double, t: Long) = SurveyPoint("P1", "TREE", e = e, n = n, z = z, latDeg = 40.0 + n * 1e-5, lonDeg = -74.0 + e * 1e-5, ellipsoidalHeight = z, solution = SolutionType.RTK_FIXED, epochs = 5, sigmaH = 0.01, sigmaV = 0.02, timestampMillis = t)
+        val job = Job("T", utm18)
+        job.store(obs(100.0, 200.0, 10.0, 1L)); eq(job.nextPointName, "1", "name P1 does not advance the counter"); eq(job.points.size, 1)
+        ok(runCatching { job.add(obs(0.0, 0.0, 0.0, 2L)) }.isFailure, "plain add still refuses duplicates")
+        job.store(obs(100.0, 200.0, 10.0, 1L).copy(name = "Q9"))
+        ok(runCatching { job.store(obs(1.0, 1.0, 1.0, 3L).copy(name = "ZZ"), DuplicateAction.STORE_AS_CHECK) }.isFailure, "a check needs an existing point")
+        eq(job.has("ZZ"), false)
+        job.store(obs(100.02, 200.0, 10.04, 3L), DuplicateAction.STORE_AS_CHECK)
+        near(job.find("P1")!!.e, 100.0, 1e-12, "check does not move the point"); eq(job.recordsOf("P1").size, 2)
+        job.store(obs(100.04, 200.0, 10.0, 4L), DuplicateAction.STORE_ANOTHER)
+        near(job.find("P1")!!.e, 100.04, 1e-12, "store another: newest normal observation is the position")
+        job.store(obs(100.02, 200.02, 10.02, 5L), DuplicateAction.AVERAGE)
+        val avg = job.find("P1")!!
+        eq(avg.method, MeasureMethod.AVERAGED); near(avg.e, (100.0 + 100.04 + 100.02) / 3, 1e-9); near(avg.z, (10.0 + 10.0 + 10.02) / 3, 1e-9)
+        eq(avg.epochs, 15); ok(avg.sdH!! > 0.0, "spread recorded"); ok(!job.recordsOf("P1").first { it.timestampMillis == 3L }.let { it.classification == Classification.NORMAL })
+        eq(job.points.size, 2, "P1 and Q9"); eq(job.observations.count { it.name == "P1" }, 5, "3 normal + 1 check + 1 average")
+        val before = job.observations.count { it.name == "P1" }
+        job.store(obs(5.0, 6.0, 7.0, 6L), DuplicateAction.OVERWRITE)
+        near(job.find("P1")!!.e, 5.0, 1e-12); eq(job.observations.count { it.name == "P1" }, 1, "overwritten records are no longer observations")
+        eq(job.recordsOf("P1").size, before + 1, "but they stay in the job as deleted records"); ok(job.recordsOf("P1").count { it.deleted } == before)
+        // saving and reloading keeps everything, including deleted records
+        val back = JobJson.fromJson(JobJson.toJson(job))
+        eq(back.recordsOf("P1").size, job.recordsOf("P1").size); near(back.find("P1")!!.e, 5.0, 1e-12); eq(back.observations.size, job.observations.size)
+        ok(back.recordsOf("P1").count { it.deleted } == before)
+        // delete one observation by index
+        ok(back.removeRecord("P1", back.recordsOf("P1").size - 1)); ok(!back.has("P1"), "no normal observation left")
+    }
+    check("job files: single-observation jobs stay in the old layout, and old files load") {
+        val job = Job("Old", utm18); job.add(SurveyPoint("1", e = 1.0, n = 2.0, z = 3.0)); job.add(SurveyPoint("2", e = 4.0, n = 5.0, z = 6.0))
+        val text = JobJson.toJson(job)
+        ok(!text.contains("observations"), "no observations key without repeats")
+        val back = JobJson.fromJson(text); eq(back.points.size, 2); near(back.find("2")!!.n, 5.0, 1e-12)
+        job.store(SurveyPoint("1", e = 1.5, n = 2.0, z = 3.0), DuplicateAction.STORE_ANOTHER)
+        val t2 = JobJson.toJson(job); ok(t2.contains("observations"))
+        val m = com.openfield.core.json.Json.parseObject(t2)
+        eq(m["points"].asList().size, 2, "points list still holds one position per name, readable by older versions")
+        eq(JobJson.fromJson(t2).observations.size, 3)
+        job.transformAll { it.copy(e = it.e + 10.0) }; near(job.find("1")!!.e, 11.5, 1e-12); near(job.recordsOf("1")[0].e, 11.0, 1e-12)
+    }
+    check("JobXML writes every observation with its classification") {
+        val job = Job("J", utm18)
+        fun obs(e: Double) = SurveyPoint("7", e = e, n = 1.0, z = 1.0, latDeg = 40.0, lonDeg = -74.0, ellipsoidalHeight = 5.0, timestampMillis = 1700000000000L)
+        job.store(obs(1.0)); job.store(obs(1.1), DuplicateAction.STORE_AS_CHECK); job.store(obs(1.2), DuplicateAction.AVERAGE)
+        job.store(SurveyPoint("8", e = 0.0, n = 0.0, z = 0.0)); job.store(SurveyPoint("8", e = 9.0, n = 9.0, z = 9.0), DuplicateAction.OVERWRITE)
+        val doc = javax.xml.parsers.DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(JobXmlExport.export(job).byteInputStream())
+        val recs = doc.getElementsByTagName("PointRecord")
+        eq(recs.length, 5, "7: normal, check, normal, averaged; 8: only the overwriting one")
+        val cls = (0 until recs.length).map { (recs.item(it) as org.w3c.dom.Element).getElementsByTagName("Classification").item(0).textContent }
+        eq(cls, listOf("Normal", "Check", "Normal", "Normal", "Normal"))
+        ok((0 until recs.length).any { (recs.item(it) as org.w3c.dom.Element).getElementsByTagName("Method").item(0).textContent == "Averaged" })
     }
     check("continuous topo by distance") {
         val job = Job("T", utm18); val stored = ArrayList<SurveyPoint>()

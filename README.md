@@ -33,6 +33,7 @@ Any compile errors will most likely be in `app/.../ui/` (Compose API details). I
 * **Equipment** choose or add a receiver profile (Bluetooth, TCP, simulator; NMEA or JavaScript driver). **Real-time connection** sets up NTRIP.
 * **Survey styles** hold the quality limits (solution type, HDOP/PDOP, precision, satellites, correction age) and epochs. Epochs failing the limits are never stored.
 * **Measure topo / codes / Observed control / Continuous topo** collect points, reducing antenna height to the ground mark.
+* **Repeat observations:** measuring a name that already exists compares the new position with the stored one (dN, dE, dZ) and asks: **Store another** (both kept, the new one becomes the position), **Average** (the position becomes the mean of the GNSS observations), **Store as check** (kept for comparison, position unchanged) or **Overwrite** (earlier observations stay as deleted records). Review shows every observation of a point, and the .jxl export writes each one as its own PointRecord (Check and Averaged are marked). Text exports (CSV, DXF, GeoJSON, LandXML) and the map use one position per name.
 * **Stake out** points and lines with arrow guidance, cut/fill, station and offset.
 * **Cogo**, **Calibration** (site localisation with residuals), **Review job**, **Import / Export** (CSV with your own column order, GeoJSON, DXF, LandXML).
 * **Appearance & layout** themes with editable colours, text and touch size, tile order and favourites, status bar and position fields, left-handed mode, and a terminology editor to rename anything.

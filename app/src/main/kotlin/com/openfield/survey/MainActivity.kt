@@ -28,6 +28,7 @@ import com.openfield.core.config.Feature
 import com.openfield.survey.ui.AppearanceScreen
 import com.openfield.survey.ui.CalibrationScreen
 import com.openfield.survey.ui.CogoScreen
+import com.openfield.survey.ui.DuplicateDialog
 import com.openfield.survey.ui.CoordLibraryScreen
 import com.openfield.survey.ui.LocalUnitLabel
 import com.openfield.survey.ui.MapScreen
@@ -77,6 +78,7 @@ fun Root(vm: AppViewModel) {
         BackHandler(enabled = vm.screenStack.size > 1) { vm.back() }
         Box(Modifier.fillMaxSize()) {
             CompositionLocalProvider(LocalUnitLabel provides vm.unit.abbr()) { Router(vm) }
+            DuplicateDialog(vm)
             val msg = vm.message
             if (msg != null) {
                 LaunchedEffect(msg) { delay(4500); if (vm.message == msg) vm.message = null }
