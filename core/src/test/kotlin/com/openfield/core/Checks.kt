@@ -563,6 +563,19 @@ fun main() {
         ok(runCatching { GridGeoid.parseGtx("t", bytes.inputStream(), doubleArrayOf(60.0, 61.0, -109.5, -108.5)) }.isFailure, "outside coverage is rejected")
     }
 
+    check("JobXML export is well-formed XML with metre values") {
+        val job = Job("Test & Co", CoordinateSystem.utm(18, unit = LinearUnit.US_SURVEY_FOOT), "desc <x>")
+        job.add(SurveyPoint("1", "TREE", e = 1000.0, n = 2000.0, z = 100.0, latDeg = 40.5, lonDeg = -74.0, ellipsoidalHeight = 70.0, timestampMillis = 1700000000000L))
+        job.add(SurveyPoint("2", kind = PointKind.CONTROL, method = MeasureMethod.KEYED_IN, e = 1.0, n = 2.0, z = 3.0))
+        val xml = JobXmlExport.export(job)
+        val doc = javax.xml.parsers.DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(xml.byteInputStream())
+        eq(doc.documentElement.tagName, "JOBFile"); eq(doc.documentElement.getAttribute("jobName"), "Test & Co")
+        val recs = doc.getElementsByTagName("PointRecord"); eq(recs.length, 2)
+        near(doc.getElementsByTagName("North").item(0).textContent.toDouble(), 2000.0 * 1200.0 / 3937.0, 1e-4, "grid values are written in metres")
+        eq(doc.getElementsByTagName("DistanceUnits").item(0).textContent, "USSurveyFeet")
+        eq(doc.getElementsByTagName("Classification").item(1).textContent, "Control"); eq(doc.getElementsByTagName("WGS84").length, 1)
+    }
+
     println()
     println("$passed passed, ${failures.size} failed")
     if (failures.isNotEmpty()) { failures.forEach { println("  - $it") }; System.exit(1) }

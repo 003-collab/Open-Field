@@ -1,7 +1,10 @@
 package com.openfield.core.io
 
 import com.openfield.core.geo.GridPoint
+import com.openfield.core.geo.LambertConic2SP
 import com.openfield.core.geo.LinearUnit
+import com.openfield.core.geo.NoGeoid
+import com.openfield.core.geo.TransverseMercator
 import com.openfield.core.json.Json
 import com.openfield.core.survey.*
 import java.time.Instant
@@ -176,6 +179,56 @@ object LandXmlExport {
             sb.append("    <CgPoint name=\"${x(p.name)}\" code=\"${x(p.code)}\">${"%.4f %.4f %.4f".format(java.util.Locale.ROOT, p.n, p.e, p.z)}</CgPoint>\n")
         }
         sb.append("  </CgPoints>\n</LandXML>\n")
+        return sb.toString()
+    }
+    private fun x(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
+}
+
+/**
+ * Trimble JobXML (.jxl) export, for opening a job's points in Trimble Business Center, Trimble Access or other tools that read JobXML.
+ * Like JobXML itself, every distance is written in metres; the UnitsRecord tells the reader which unit to display.
+ * Written: header, job properties, units, coordinate system names, and one PointRecord per point (name, code, method, classification,
+ * grid North/East/Elevation, and WGS 84 latitude/longitude/height when the point was measured with GNSS).
+ */
+object JobXmlExport {
+    fun export(job: Job, appVersion: String = "1.0", points: List<SurveyPoint> = job.points): String {
+        val cs = job.coordinateSystem
+        val u = cs.unit
+        val stamp = fun(ms: Long): String = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss").withZone(java.time.ZoneOffset.UTC)
+            .format(java.time.Instant.ofEpochMilli(if (ms > 0) ms else job.createdMillis))
+        fun m(v: Double) = String.format(java.util.Locale.ROOT, "%.5f", u.toMeters(v))
+        fun d(v: Double) = String.format(java.util.Locale.ROOT, "%.10f", v)
+        val sb = StringBuilder()
+        sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+        sb.append("<JOBFile jobName=\"${x(job.name)}\" TimeStamp=\"${stamp(job.modifiedMillis)}\" version=\"5.50\" product=\"OpenField\" productVersion=\"${x(appVersion)}\">\n")
+        sb.append("  <FieldBook>\n")
+        sb.append("    <JobPropertiesRecord TimeStamp=\"${stamp(job.createdMillis)}\">\n")
+        sb.append("      <Reference>${x(job.name)}</Reference>\n      <Description>${x(job.description)}</Description>\n      <Operator>${x(job.operator)}</Operator>\n")
+        sb.append("    </JobPropertiesRecord>\n")
+        val distanceUnits = when (u) { LinearUnit.METER -> "Metres"; LinearUnit.US_SURVEY_FOOT -> "USSurveyFeet"; LinearUnit.INTL_FOOT -> "InternationalFeet" }
+        sb.append("    <UnitsRecord TimeStamp=\"${stamp(job.createdMillis)}\">\n")
+        sb.append("      <DistanceUnits>$distanceUnits</DistanceUnits>\n      <AngleUnits>Degrees</AngleUnits>\n      <LatLongUnits>Degrees</LatLongUnits>\n      <CoordinateOrder>North-East-Elevation</CoordinateOrder>\n")
+        sb.append("    </UnitsRecord>\n")
+        val projType = when (cs.projection) { is TransverseMercator -> "TransverseMercator"; is LambertConic2SP -> "LambertConformalConic2SP"; null -> "None" }
+        sb.append("    <CoordinateSystemRecord TimeStamp=\"${stamp(job.createdMillis)}\">\n")
+        sb.append("      <SystemName>${x(cs.librarySystem ?: cs.name)}</SystemName>\n      <ZoneName>${x(cs.libraryZone ?: cs.name)}</ZoneName>\n      <DatumName>${x(cs.datum.name)}</DatumName>\n")
+        sb.append("      <ProjectionType>$projType</ProjectionType>\n")
+        cs.geoid.let { if (it !== NoGeoid) sb.append("      <GeoidModel>${x(it.name)}</GeoidModel>\n") }
+        sb.append("    </CoordinateSystemRecord>\n")
+        for (p in points) {
+            sb.append("    <PointRecord TimeStamp=\"${stamp(p.timestampMillis)}\">\n")
+            sb.append("      <Name>${x(p.name)}</Name>\n      <Code>${x(p.code)}</Code>\n")
+            sb.append("      <Method>${x(if (p.latDeg != null) "RTK" else p.method.label)}</Method>\n")
+            sb.append("      <Classification>${if (p.kind == PointKind.CONTROL) "Control" else "Normal"}</Classification>\n")
+            sb.append("      <Grid>\n        <North>${m(p.n)}</North>\n        <East>${m(p.e)}</East>\n        <Elevation>${m(p.z)}</Elevation>\n      </Grid>\n")
+            if (p.latDeg != null && p.lonDeg != null) {
+                sb.append("      <WGS84>\n        <Latitude>${d(p.latDeg)}</Latitude>\n        <Longitude>${d(p.lonDeg)}</Longitude>\n")
+                p.ellipsoidalHeight?.let { sb.append("        <Height>${String.format(java.util.Locale.ROOT, "%.5f", it)}</Height>\n") }
+                sb.append("      </WGS84>\n")
+            }
+            sb.append("    </PointRecord>\n")
+        }
+        sb.append("  </FieldBook>\n</JOBFile>\n")
         return sb.toString()
     }
     private fun x(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
