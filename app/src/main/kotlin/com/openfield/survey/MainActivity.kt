@@ -16,6 +16,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.key
@@ -27,6 +28,10 @@ import com.openfield.core.config.Feature
 import com.openfield.survey.ui.AppearanceScreen
 import com.openfield.survey.ui.CalibrationScreen
 import com.openfield.survey.ui.CogoScreen
+import com.openfield.survey.ui.CoordLibraryScreen
+import com.openfield.survey.ui.LocalUnitLabel
+import com.openfield.survey.ui.MapScreen
+import com.openfield.survey.ui.NewJobScreen
 import com.openfield.survey.ui.ContinuousScreen
 import com.openfield.survey.ui.CoordEditScreen
 import com.openfield.survey.ui.CoordinateSystemsScreen
@@ -71,7 +76,7 @@ fun Root(vm: AppViewModel) {
         SideEffect { view.keepScreenOn = cfg.keepScreenOn }
         BackHandler(enabled = vm.screenStack.size > 1) { vm.back() }
         Box(Modifier.fillMaxSize()) {
-            Router(vm)
+            CompositionLocalProvider(LocalUnitLabel provides vm.unit.abbr()) { Router(vm) }
             val msg = vm.message
             if (msg != null) {
                 LaunchedEffect(msg) { delay(4500); if (vm.message == msg) vm.message = null }
@@ -92,6 +97,9 @@ fun Router(vm: AppViewModel) {
         when {
             r == "home" -> HomeScreen(vm)
             r == Feature.JOBS -> JobsScreen(vm)
+            r == Feature.MAP -> MapScreen(vm)
+            r == "job_new" -> NewJobScreen(vm)
+            r.startsWith("coord_library:") -> CoordLibraryScreen(vm, r.removePrefix("coord_library:"))
             r == Feature.MEASURE_TOPO || r == Feature.MEASURE_CODES || r == Feature.OBSERVED_CONTROL -> MeasureScreen(vm, r)
             r == Feature.CONTINUOUS_TOPO -> ContinuousScreen(vm)
             r == Feature.STAKE_POINTS -> StakePointsScreen(vm)

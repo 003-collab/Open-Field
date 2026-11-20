@@ -10,6 +10,56 @@ data class GridPoint(val e: Double, val n: Double, val z: Double)
 data class LatLonH(val latDeg: Double, val lonDeg: Double, val ellipsoidalHeight: Double)
 
 /**
+ * "Ground" coordinates: grid coordinates scaled about a chosen point so that distances match ground distances at the
+ * project height. e' = groundE + (e - originE) * scaleFactor (metres), same for northing. Height is not affected.
+ */
+data class GroundSpec(
+    val scaleFactor: Double,
+    val originE: Double, val originN: Double,
+    val groundE: Double = originE, val groundN: Double = originN,
+    val projectHeightM: Double = 0.0
+) {
+    fun forward(e: Double, n: Double) = doubleArrayOf(groundE + (e - originE) * scaleFactor, groundN + (n - originN) * scaleFactor)
+    fun inverse(ge: Double, gn: Double) = doubleArrayOf(originE + (ge - groundE) / scaleFactor, originN + (gn - groundN) / scaleFactor)
+    fun toMap(): Map<String, Any?> = mapOf("scale" to scaleFactor, "originE" to originE, "originN" to originN, "groundE" to groundE, "groundN" to groundN, "projectHeight" to projectHeightM)
+
+    companion object {
+        fun fromMap(m: Map<String, Any?>): GroundSpec {
+            fun d(k: String, def: Double = 0.0) = (m[k] as? Number)?.toDouble() ?: def
+            return GroundSpec(d("scale", 1.0), d("originE"), d("originN"), d("groundE"), d("groundN"), d("projectHeight"))
+        }
+
+        /**
+         * Scale that turns grid distances into ground distances at [latDeg],[lonDeg] and ellipsoidal height [ellipsoidalHeightM]:
+         * 1 / (gridScale * R / (R + h)). The grid origin is that location's grid coordinate, left unshifted.
+         */
+        fun at(cs: CoordinateSystem, latDeg: Double, lonDeg: Double, ellipsoidalHeightM: Double): GroundSpec {
+            val proj = requireNotNull(cs.projection) { "Ground coordinates need a projection" }
+            val flat = cs.copy(localization = null, ground = null, unit = LinearUnit.METER, geoid = NoGeoid, datum = cs.datum)
+            val g0 = flat.toLocal(LatLonH(latDeg, lonDeg, 0.0))
+            val k = gridScaleAt(proj, latDeg, lonDeg)
+            val ell = proj.ellipsoid
+            val sl = sin(latDeg * DEG)
+            val w = 1 - ell.e2 * sl * sl
+            val rm = ell.a * (1 - ell.e2) / w.pow(1.5); val rn = ell.a / sqrt(w)
+            val r = sqrt(rm * rn)
+            val elev = r / (r + ellipsoidalHeightM)
+            return GroundSpec(1.0 / (k * elev), g0.e, g0.n, g0.e, g0.n, ellipsoidalHeightM)
+        }
+
+        /** Local grid scale factor of a conformal projection, measured numerically over 100 m. */
+        fun gridScaleAt(proj: Projection, latDeg: Double, lonDeg: Double): Double {
+            val ell = proj.ellipsoid
+            val sl = sin(latDeg * DEG); val w = 1 - ell.e2 * sl * sl
+            val rm = ell.a * (1 - ell.e2) / w.pow(1.5)
+            val a = proj.forward(latDeg * DEG, lonDeg * DEG)
+            val b = proj.forward(latDeg * DEG + 100.0 / rm, lonDeg * DEG)
+            return hypot(b[0] - a[0], b[1] - a[1]) / 100.0
+        }
+    }
+}
+
+/**
  * Complete coordinate system definition, analogous to a "coordinate system" in a data collector:
  * datum transformation -> projection -> geoid model -> optional site calibration -> linear unit.
  *
@@ -21,7 +71,13 @@ data class CoordinateSystem(
     val projection: Projection? = null,
     val geoid: GeoidModel = NoGeoid,
     val unit: LinearUnit = LinearUnit.METER,
-    val localization: Localization? = null
+    val localization: Localization? = null,
+    val ground: GroundSpec? = null,
+    /** Library selection this system was built from (informational, lets the picker reopen on the same entries). */
+    val librarySystem: String? = null,
+    val libraryZone: String? = null,
+    val refFrame: String? = null,
+    val epoch: Double? = null
 ) {
     /** WGS-84 geodetic -> local coordinates in [unit]. Without a projection, E=lon°, N=lat° and Z in [unit]. */
     fun toLocal(p: LatLonH): GridPoint {
@@ -38,6 +94,7 @@ data class CoordinateSystem(
         if (proj == null) return GridPoint(lon / DEG, lat / DEG, unit.fromMeters(ortho))
         val en = proj.forward(lat, lon)
         var e = en[0]; var n = en[1]; var z = ortho
+        ground?.let { val q = it.forward(e, n); e = q[0]; n = q[1] }
         localization?.let { val l = it.forward(e, n, z); e = l[0]; n = l[1]; z = l[2] }
         return GridPoint(unit.fromMeters(e), unit.fromMeters(n), unit.fromMeters(z))
     }
@@ -51,6 +108,7 @@ data class CoordinateSystem(
         } else {
             var e = unit.toMeters(g.e); var n = unit.toMeters(g.n); var z = unit.toMeters(g.z)
             localization?.let { val l = it.inverse(e, n, z); e = l[0]; n = l[1]; z = l[2] }
+            ground?.let { val q = it.inverse(e, n); e = q[0]; n = q[1] }
             val ll = proj.inverse(e, n)
             lat = ll[0]; lon = ll[1]; ortho = z
         }
@@ -87,6 +145,11 @@ data class CoordinateSystem(
             else -> {}
         }
         localization?.let { m["localization"] = it.toMap() }
+        ground?.let { m["ground"] = it.toMap() }
+        librarySystem?.let { m["librarySystem"] = it }
+        libraryZone?.let { m["libraryZone"] = it }
+        refFrame?.let { m["refFrame"] = it }
+        epoch?.let { m["epoch"] = it }
         return m
     }
 
@@ -118,8 +181,10 @@ data class CoordinateSystem(
                 else -> NoGeoid
             }
             val loc = if (m.containsKey("localization")) Localization.fromMap(m["localization"].asObj()) else null
+            val gr = if (m.containsKey("ground")) GroundSpec.fromMap(m["ground"].asObj()) else null
             return CoordinateSystem(m["name"].asStr("Custom"), datum, proj, geoid,
-                runCatching { LinearUnit.valueOf(m["unit"].asStr()) }.getOrDefault(LinearUnit.METER), loc)
+                runCatching { LinearUnit.valueOf(m["unit"].asStr()) }.getOrDefault(LinearUnit.METER), loc, gr,
+                m["librarySystem"]?.asStr(), m["libraryZone"]?.asStr(), m["refFrame"]?.asStr(), (m["epoch"] as? Number)?.toDouble())
         }
 
         fun fromJson(text: String, geoidResolver: (String) -> GeoidModel? = { null }) = fromMap(Json.parseObject(text), geoidResolver)

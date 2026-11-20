@@ -23,6 +23,14 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.material.icons.filled.*
+import com.openfield.survey.MapMode
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -203,7 +211,31 @@ fun NoJob(vm: AppViewModel) {
 
 // ---------------------------------------------------------------- screen frame and status strip
 
-/** Standard screen: coloured header with back button, receiver status strip, then scrollable or custom content. */
+/** One key of the bottom soft-key bar (Esc, Options, Enter ...). Keys are given in logical order, the primary action last. */
+data class SoftKey(val label: String, val onClick: () -> Unit, val enabled: Boolean = true, val primary: Boolean = false)
+
+/** Bottom bar of large keys, like a controller's soft keys. The primary key is highlighted; left-handed mode mirrors the order. */
+@Composable
+fun SoftKeyBar(keys: List<SoftKey>) {
+    val t = LocalAppTheme.current
+    val ordered = if (LocalLeftHanded.current) keys.reversed() else keys
+    Row(Modifier.fillMaxWidth().background(t.c(ColorRole.HEADER)).navigationBarsPadding()) {
+        ordered.forEachIndexed { i, k ->
+            val bg = if (k.primary) t.c(ColorRole.PRIMARY) else Color.Transparent
+            val fg = if (k.primary) t.c(ColorRole.ON_PRIMARY) else t.c(ColorRole.ON_HEADER)
+            Box(
+                Modifier.weight(1f).height(56.dp * LocalTouch.current).background(bg)
+                    .then(if (k.enabled) Modifier.clickable { k.onClick() } else Modifier),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(k.label, color = fg.copy(alpha = if (k.enabled) 1f else 0.4f), fontWeight = FontWeight.Medium, maxLines = 1, textAlign = TextAlign.Center)
+            }
+            if (i < ordered.size - 1) Box(Modifier.width(1.dp).height(56.dp * LocalTouch.current).background(t.c(ColorRole.ON_HEADER).copy(alpha = 0.18f)))
+        }
+    }
+}
+
+/** Standard screen: coloured header with back button, receiver status strip, content, and an optional soft-key bar. */
 @Composable
 fun ScreenFrame(
     vm: AppViewModel,
@@ -211,6 +243,7 @@ fun ScreenFrame(
     onBack: (() -> Unit)? = { vm.back() },
     actions: @Composable RowScope.() -> Unit = {},
     showStatus: Boolean = true,
+    softKeys: List<SoftKey>? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
     val t = LocalAppTheme.current
@@ -229,7 +262,65 @@ fun ScreenFrame(
             actions()
         }
         if (showStatus) StatusStrip(vm)
-        Column(Modifier.weight(1f).fillMaxWidth().navigationBarsPadding(), content = content)
+        Column(Modifier.weight(1f).fillMaxWidth().then(if (softKeys == null) Modifier.navigationBarsPadding() else Modifier), content = content)
+        if (softKeys != null) SoftKeyBar(softKeys)
+    }
+}
+
+/** Header buttons that switch a map + form screen between Map, Split and Form. */
+@Composable
+fun RowScope.MapModeButtons(vm: AppViewModel) {
+    val t = LocalAppTheme.current
+    for ((mode, icon, desc) in listOf(Triple(MapMode.MAP, Icons.Default.Map, "Map only"), Triple(MapMode.SPLIT, Icons.Default.VerticalSplit, "Split screen"), Triple(MapMode.FORM, Icons.Default.Edit, "Form only"))) {
+        val on = vm.mapMode == mode
+        IconButton(onClick = { vm.mapMode = mode }) {
+            Icon(icon, desc, tint = if (on) t.c(ColorRole.ACCENT) else t.c(ColorRole.ON_HEADER).copy(alpha = 0.75f))
+        }
+    }
+}
+
+/**
+ * A map beside its form (map left, form right; mirrored in left-handed mode), stacked top/bottom in portrait. The divider can be dragged
+ * and the user can show either pane alone from the header buttons ([MapModeButtons]). Only the visible pane is composed, so hiding the map resets its view.
+ */
+@Composable
+fun MapFormSplit(vm: AppViewModel, map: @Composable (Modifier) -> Unit, form: @Composable (Modifier) -> Unit) {
+    val t = LocalAppTheme.current
+    val mirrored = LocalLeftHanded.current
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val landscape = maxWidth >= maxHeight
+        val totalPx = (if (landscape) constraints.maxWidth else constraints.maxHeight).toFloat()
+        val ratio = vm.splitRatio.coerceIn(0.2f, 0.8f)
+        val mode = vm.mapMode
+        val handle: @Composable (Modifier) -> Unit = { m ->
+            Box(
+                m.background(t.c(ColorRole.OUTLINE).copy(alpha = 0.35f)).pointerInput(landscape, mirrored) {
+                    detectDragGestures { change, drag ->
+                        change.consume()
+                        val d = (if (landscape) drag.x else drag.y) / totalPx
+                        vm.splitRatio = (vm.splitRatio + if (landscape && mirrored) -d else d).coerceIn(0.2f, 0.8f)
+                    }
+                },
+                contentAlignment = Alignment.Center
+            ) { Text(if (landscape) "⋮" else "⋯", color = t.c(ColorRole.ON_SURFACE).copy(alpha = 0.7f), fontWeight = FontWeight.Bold) }
+        }
+        when (mode) {
+            MapMode.MAP -> map(Modifier.fillMaxSize())
+            MapMode.FORM -> form(Modifier.fillMaxSize())
+            MapMode.SPLIT -> if (landscape) {
+                Row(Modifier.fillMaxSize()) {
+                    val mapW = Modifier.weight(ratio).fillMaxHeight(); val formW = Modifier.weight(1f - ratio).fillMaxHeight()
+                    if (mirrored) { form(formW); handle(Modifier.width(22.dp).fillMaxHeight()); map(mapW) }
+                    else { map(mapW); handle(Modifier.width(22.dp).fillMaxHeight()); form(formW) }
+                }
+            } else {
+                Column(Modifier.fillMaxSize()) {
+                    map(Modifier.weight(ratio).fillMaxWidth())
+                    handle(Modifier.height(22.dp).fillMaxWidth())
+                    form(Modifier.weight(1f - ratio).fillMaxWidth())
+                }
+            }
+        }
     }
 }
 
@@ -242,69 +333,132 @@ fun ScrollBody(content: @Composable ColumnScope.() -> Unit) {
     )
 }
 
-/** One column on phones; two side-by-side panes on tablets. [right] receives a modifier sized for the current layout. */
+/**
+ * A form beside a map: [left] is the scrolling form, [right] receives a modifier for the map. The map sits on the left in landscape (top in portrait),
+ * the divider drags, and the header buttons from [MapModeButtons] show either pane alone.
+ */
 @Composable
-fun TwoPane(left: @Composable ColumnScope.() -> Unit, right: @Composable (Modifier) -> Unit) {
-    BoxWithConstraints(Modifier.fillMaxSize()) {
-        if (maxWidth >= 720.dp) {
-            Row(Modifier.fillMaxSize()) {
-                Column(
-                    Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()).padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp), content = left
-                )
-                Box(Modifier.weight(1f).fillMaxHeight().padding(12.dp)) { right(Modifier.fillMaxSize()) }
-            }
-        } else {
-            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                left()
-                right(Modifier.fillMaxWidth().height(280.dp))
-            }
+fun TwoPane(vm: AppViewModel, left: @Composable ColumnScope.() -> Unit, right: @Composable (Modifier) -> Unit) {
+    MapFormSplit(
+        vm,
+        map = { m -> Box(m.padding(6.dp)) { right(Modifier.fillMaxSize()) } },
+        form = { m -> Column(m.verticalScroll(rememberScrollState()).padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp), content = left) }
+    )
+}
+
+/** Coloured title band at the top of a form pane, with a star that adds the screen to the favourites at the top of the home menu. */
+@Composable
+fun FormHeader(title: String, favorite: Boolean? = null, onFavorite: () -> Unit = {}) {
+    val t = LocalAppTheme.current
+    Row(Modifier.fillMaxWidth().background(t.c(ColorRole.PRIMARY)).padding(start = 14.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(title, Modifier.weight(1f).padding(vertical = 12.dp), color = t.c(ColorRole.ON_PRIMARY), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 1)
+        if (favorite != null) IconButton(onClick = onFavorite) {
+            Icon(if (favorite) Icons.Default.Star else Icons.Default.StarBorder, "Favourite", tint = t.c(ColorRole.ON_PRIMARY))
         }
     }
 }
 
-/** Receiver status chips, configured by the user in Appearance & layout. */
+/** Caption over a read-only value, for facts that are shown but not edited. */
+@Composable
+fun FormValue(label: String, value: String, modifier: Modifier = Modifier) {
+    Column(modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+        Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
+        Text(value, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+fun SwitchRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, Modifier.weight(1f))
+        androidx.compose.material3.Switch(checked = checked, onCheckedChange = onChange)
+    }
+}
+
+/** Two columns on a wide screen (tablet, landscape), one column on a phone. */
+@Composable
+fun TwoColumn(left: @Composable ColumnScope.() -> Unit, right: @Composable ColumnScope.() -> Unit) {
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        if (maxWidth >= 640.dp) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp), content = left)
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp), content = right)
+            }
+        } else {
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) { left(); right() }
+        }
+    }
+}
+
+private fun statusIcon(f: String): ImageVector? = when (f) {
+    Field.CONNECTION -> Icons.Default.Bluetooth
+    Field.SOLUTION -> Icons.Default.GpsFixed
+    Field.SATELLITES -> Icons.Default.SatelliteAlt
+    Field.RTK_STATE -> Icons.Default.Cloud
+    Field.JOB_NAME -> Icons.Default.Folder
+    else -> null
+}
+
+/**
+ * Receiver status tiles in the controller style: an icon over a value, with the fields the user chose in Appearance & layout.
+ * Fields without a natural icon show a small caption instead. A summary of the position solution sits at the right.
+ */
 @Composable
 fun StatusStrip(vm: AppViewModel) {
     val t = LocalAppTheme.current
     val fields = vm.config.layout.statusBarFields
     val snap = vm.snapshot
     val unit = vm.unit
-    Row(
-        Modifier.fillMaxWidth().background(t.c(ColorRole.SURFACE)).horizontalScroll(androidx.compose.foundation.rememberScrollState()).padding(horizontal = 10.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(18.dp), verticalAlignment = Alignment.CenterVertically
-    ) {
-        for (f in fields) {
-            val labels = LocalLabels.current
-            val title = labels.get("status.$f")
-            var color: Color? = null
-            val value: String = when (f) {
-                Field.CONNECTION -> {
-                    color = t.c(when (vm.connection) { ConnectionState.CONNECTED -> ColorRole.GOOD; ConnectionState.ERROR -> ColorRole.BAD; ConnectionState.CONNECTING -> ColorRole.WARNING; else -> ColorRole.OUTLINE })
-                    when (vm.connection) { ConnectionState.CONNECTED -> "Connected"; ConnectionState.CONNECTING -> "Connecting"; ConnectionState.ERROR -> "Error"; ConnectionState.DISCONNECTED -> "Off" }
-                }
-                Field.SOLUTION -> { color = t.solutionColor(snap?.solution); snap?.solution?.label ?: "-" }
-                Field.H_PRECISION -> snap?.horizontalPrecision?.let { fmtNum(unit.fromMeters(it), 3) + " " + unit.abbr() } ?: "-"
-                Field.V_PRECISION -> snap?.verticalPrecision?.let { fmtNum(unit.fromMeters(it), 3) + " " + unit.abbr() } ?: "-"
-                Field.SATELLITES -> snap?.satellitesUsed?.toString() ?: "-"
-                Field.HDOP -> fmtNumOrDash(snap?.hdop, 1)
-                Field.PDOP -> fmtNumOrDash(snap?.pdop, 1)
-                Field.CORRECTION_AGE -> snap?.diffAgeSeconds?.let { fmtNum(it, 0) + " s" } ?: "-"
-                Field.RTK_STATE -> {
-                    color = t.c(when (vm.ntripState) { com.openfield.core.ntrip.NtripState.CONNECTED -> ColorRole.GOOD; com.openfield.core.ntrip.NtripState.ERROR -> ColorRole.BAD; com.openfield.core.ntrip.NtripState.CONNECTING -> ColorRole.WARNING; else -> ColorRole.OUTLINE })
-                    when (vm.ntripState) {
-                        com.openfield.core.ntrip.NtripState.CONNECTED -> "Receiving"
-                        com.openfield.core.ntrip.NtripState.CONNECTING -> "Connecting"
-                        com.openfield.core.ntrip.NtripState.ERROR -> "Error"
-                        else -> "Off"
+    val labels = LocalLabels.current
+    val onSurface = MaterialTheme.colorScheme.onSurface
+    Row(Modifier.fillMaxWidth().background(t.c(ColorRole.SURFACE)), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.weight(1f, fill = false).horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+            for (f in fields) {
+                var color: Color? = null
+                val value: String = when (f) {
+                    Field.CONNECTION -> {
+                        color = t.c(when (vm.connection) { ConnectionState.CONNECTED -> ColorRole.GOOD; ConnectionState.ERROR -> ColorRole.BAD; ConnectionState.CONNECTING -> ColorRole.WARNING; else -> ColorRole.OUTLINE })
+                        when (vm.connection) { ConnectionState.CONNECTED -> "Connected"; ConnectionState.CONNECTING -> "Connecting"; ConnectionState.ERROR -> "Error"; ConnectionState.DISCONNECTED -> "Off" }
                     }
+                    Field.SOLUTION -> { color = t.solutionColor(snap?.solution); snap?.solution?.label ?: "-" }
+                    Field.H_PRECISION -> snap?.horizontalPrecision?.let { fmtNum(unit.fromMeters(it), 3) + " " + unit.abbr() } ?: "-"
+                    Field.V_PRECISION -> snap?.verticalPrecision?.let { fmtNum(unit.fromMeters(it), 3) + " " + unit.abbr() } ?: "-"
+                    Field.SATELLITES -> snap?.satellitesUsed?.toString() ?: "-"
+                    Field.HDOP -> fmtNumOrDash(snap?.hdop, 1)
+                    Field.PDOP -> fmtNumOrDash(snap?.pdop, 1)
+                    Field.CORRECTION_AGE -> snap?.diffAgeSeconds?.let { fmtNum(it, 0) + " s" } ?: "-"
+                    Field.RTK_STATE -> {
+                        color = t.c(when (vm.ntripState) { com.openfield.core.ntrip.NtripState.CONNECTED -> ColorRole.GOOD; com.openfield.core.ntrip.NtripState.ERROR -> ColorRole.BAD; com.openfield.core.ntrip.NtripState.CONNECTING -> ColorRole.WARNING; else -> ColorRole.OUTLINE })
+                        when (vm.ntripState) {
+                            com.openfield.core.ntrip.NtripState.CONNECTED -> "Receiving"
+                            com.openfield.core.ntrip.NtripState.CONNECTING -> "Connecting"
+                            com.openfield.core.ntrip.NtripState.ERROR -> "Error"
+                            else -> "Off"
+                        }
+                    }
+                    Field.JOB_NAME -> vm.job?.name ?: "-"
+                    else -> ""
                 }
-                Field.JOB_NAME -> vm.job?.name ?: "-"
-                else -> ""
+                val icon = statusIcon(f)
+                Column(
+                    Modifier.widthIn(min = 64.dp).height(56.dp).padding(horizontal = 10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center
+                ) {
+                    if (icon != null) Icon(icon, labels.get("status.$f"), Modifier.size(22.dp), tint = color ?: onSurface)
+                    else Text(labels.get("status.$f"), style = MaterialTheme.typography.labelSmall, color = onSurface.copy(alpha = 0.7f), maxLines = 1)
+                    Text(value, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = color ?: onSurface, maxLines = 1)
+                }
+                Box(Modifier.width(1.dp).height(40.dp).background(t.c(ColorRole.OUTLINE)))
             }
-            Column {
-                Text(title, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f), maxLines = 1)
-                Text(value, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = color ?: MaterialTheme.colorScheme.onSurface, maxLines = 1)
+        }
+        // position solution summary, for example "Fixed  H 0.015 m  V 0.030 m"
+        if (snap != null && snap.hasPosition) {
+            val sol = snap.solution
+            val h = snap.horizontalPrecision?.let { "H:" + fmtNum(unit.fromMeters(it), 3) + unit.abbr() }
+            val v = snap.verticalPrecision?.let { "V:" + fmtNum(unit.fromMeters(it), 3) + unit.abbr() }
+            Row(Modifier.padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(listOfNotNull(sol.label, h, v).joinToString(" "), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = t.solutionColor(sol), maxLines = 1)
+                if (sol == com.openfield.core.gnss.SolutionType.RTK_FIXED) Icon(Icons.Default.Check, "Fixed", Modifier.padding(start = 4.dp).size(18.dp), tint = t.c(ColorRole.GOOD))
             }
         }
     }

@@ -15,6 +15,8 @@ import java.util.Base64
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.math.abs
 import kotlin.math.hypot
+import kotlin.math.pow
+import kotlin.math.sqrt
 
 /** Dependency-free test runner (JUnit is unavailable offline). Run via `gradle :core:runChecks` or the offline build script. */
 private var passed = 0
@@ -503,6 +505,62 @@ fun main() {
         val s = SurveyStyle("x", "X", gate = QualityGate(maxHdop = null), topoEpochs = 9, continuousMode = ContinuousMode.DISTANCE, stakeoutOrientation = StakeoutOrientation.NORTH)
         eq(SurveyStyle.fromMap(Json.parseObject(Json.stringify(s.toMap()))), s)
         ok(SurveyStyle.builtin.size >= 3 && SurveyStyle.builtin.map { it.id }.toSet().size == SurveyStyle.builtin.size)
+    }
+
+    check("library: State Plane zones match PROJ (EPSG registry) to 1 mm") {
+        val us = CoordSysLibrary.system("United States/NAD83")!!
+        ok(us.zones.size > 100, "zone count ${us.zones.size}")
+        val refs = listOf(
+            Triple("Kentucky Single Zone", 37.5 to -85.0, 1566313.4879 to 1129746.4829),
+            Triple("Alabama East", 32.8 to -85.6, 221853.9653 to 255039.6790),
+            Triple("California zone 5", 34.2 to -118.4, 1963134.1917 to 577721.0843),
+            Triple("Florida East", 28.5 to -81.2, 180420.3073 to 461633.7816),
+            Triple("Texas Central", 31.0 to -99.0, 827320.9093 to 3148569.6363),
+            Triple("New York Long Island", 40.8 to -73.2, 367509.9363 to 70637.5317)
+        )
+        for ((zn, ll, en) in refs) {
+            val z = us.zones.first { it.name == zn }
+            val cs = CoordSysLibrary.build(us, z, LinearUnit.METER)
+            val g = cs.toLocal(LatLonH(ll.first, ll.second, 0.0))
+            near(g.e, en.first, 0.001, "$zn E"); near(g.n, en.second, 0.001, "$zn N")
+            val b = cs.fromLocal(g); near(b.latDeg, ll.first, 1e-9, "$zn lat"); near(b.lonDeg, ll.second, 1e-9, "$zn lon")
+        }
+        eq(us.zones.first { it.name == "Kentucky Single Zone" }.defaultUnit, LinearUnit.US_SURVEY_FOOT)
+        eq(CoordSysLibrary.system("UTM")!!.zones.size, 120)
+        ok(CoordSysLibrary.geoids.any { it.name.startsWith("GEOID18") })
+    }
+    check("ground coordinates: scale from project height, round trip and JSON") {
+        val us = CoordSysLibrary.system("United States/NAD83")!!
+        val grid = CoordSysLibrary.build(us, us.zones.first { it.name == "Kentucky Single Zone" }, LinearUnit.METER)
+        val h = 152.4
+        val gs = GroundSpec.at(grid, 37.5, -85.0, h)
+        ok(gs.scaleFactor > 0.99 && gs.scaleFactor < 1.01, "scale ${gs.scaleFactor}")
+        val cs = grid.copy(ground = gs)
+        // two points 1 km apart on a plane at height h: ground coordinates must reproduce the real (ECEF) distance
+        val a = LatLonH(37.5, -85.0, h); val b = LatLonH(37.5 + 1000.0 / 110900.0, -85.0 + 400.0 / 88000.0, h)
+        val ea = Ellipsoid.WGS84.toEcef(a.latDeg * DEG, a.lonDeg * DEG, h); val eb = Ellipsoid.WGS84.toEcef(b.latDeg * DEG, b.lonDeg * DEG, h)
+        val real = sqrt((ea[0] - eb[0]).pow(2) + (ea[1] - eb[1]).pow(2) + (ea[2] - eb[2]).pow(2))
+        val ga = cs.toLocal(a); val gb = cs.toLocal(b)
+        near(hypot(gb.e - ga.e, gb.n - ga.n), real, 0.003, "ground distance")
+        val gridDist = hypot(grid.toLocal(b).e - grid.toLocal(a).e, grid.toLocal(b).n - grid.toLocal(a).n)
+        ok(abs(gridDist - real) > 0.02, "grid distance should differ visibly from ground (${gridDist - real} m)")
+        near(ga.e, grid.toLocal(a).e, 1e-6, "origin is unshifted")
+        val back = cs.fromLocal(gb); near(back.latDeg, b.latDeg, 1e-9); near(back.lonDeg, b.lonDeg, 1e-9)
+        val rt = CoordinateSystem.fromJson(cs.toJson())
+        eq(rt.librarySystem, "United States/NAD83"); eq(rt.libraryZone, "Kentucky Single Zone"); near(rt.ground!!.scaleFactor, gs.scaleFactor, 1e-12)
+        near(rt.toLocal(b).e, gb.e, 1e-6)
+    }
+    check("GTX geoid grid: full read, windowed read and bilinear values") {
+        val bos = java.io.ByteArrayOutputStream(); val d = java.io.DataOutputStream(bos)
+        d.writeDouble(30.0); d.writeDouble(250.0); d.writeDouble(0.5); d.writeDouble(0.5); d.writeInt(9); d.writeInt(9)
+        for (r in 0 until 9) for (c in 0 until 9) d.writeFloat((10.0 + (30.0 + r * 0.5) * 0.1 + (250.0 + c * 0.5 - 360.0) * 0.01).toFloat())
+        val bytes = bos.toByteArray()
+        val full = GridGeoid.parseGtx("t", bytes.inputStream())
+        near(full.separation(31.2, -109.3), 10.0 + 3.12 - 1.093, 1e-4)
+        val win = GridGeoid.parseGtx("t", bytes.inputStream(), doubleArrayOf(31.0, 32.0, -109.5, -108.5))
+        ok(win.rows < 9 && win.cols < 9, "window crops the grid"); near(win.separation(31.2, -109.3), 10.0 + 3.12 - 1.093, 1e-4)
+        val again = GridGeoid.parseAscii("t", win.toAscii()); near(again.separation(31.2, -109.3), win.separation(31.2, -109.3), 1e-4, "ASCII round trip")
+        ok(runCatching { GridGeoid.parseGtx("t", bytes.inputStream(), doubleArrayOf(60.0, 61.0, -109.5, -108.5)) }.isFailure, "outside coverage is rejected")
     }
 
     println()

@@ -81,7 +81,6 @@ fun TextEditorScreen(
     onSave: (String) -> String?
 ) {
     var text by remember { mutableStateOf(initial) }
-    var error by remember { mutableStateOf<String?>(null) }
     ScreenFrame(vm, title, showStatus = false) {
         Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             InfoText(help)
@@ -408,15 +407,8 @@ private const val COORD_HELP =
 fun CoordinateSystemsScreen(vm: AppViewModel) {
     val t = LocalAppTheme.current
     val ctx = LocalContext.current
-    var zone by remember { mutableStateOf("18") }
-    var south by remember { mutableStateOf(false) }
-    var datum by remember { mutableStateOf(Datum.WGS84) }
-    var unit by remember { mutableStateOf(LinearUnit.METER) }
-    var geoidChoice by remember { mutableStateOf("None") }
-    var geoidConst by remember { mutableStateOf("0.0") }
     var geoidRev by remember { mutableIntStateOf(0) }
     var geoidName by remember { mutableStateOf("") }
-    var error by remember { mutableStateOf<String?>(null) }
     var pendingApply by remember { mutableStateOf<CoordinateSystem?>(null) }
     val grids = remember(geoidRev) { vm.store.listGeoids() }
 
@@ -426,23 +418,10 @@ fun CoordinateSystemsScreen(vm: AppViewModel) {
                 val text = ctx.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: throw IllegalStateException("Could not read file")
                 val n = geoidName.trim().ifEmpty { "geoid" }
                 vm.store.saveGeoid(n, text)
-                geoidRev++; geoidChoice = n
+                geoidRev++
                 vm.message = "Installed geoid grid '$n'"
             } catch (e: Exception) { vm.message = "Geoid grid rejected: ${e.message}" }
         }
-    }
-
-    fun build(): CoordinateSystem? {
-        val z = zone.toIntOrNull()
-        if (z == null || z !in 1..60) { error = "UTM zone must be 1 to 60"; return null }
-        val geoid: GeoidModel = when (geoidChoice) {
-            "None" -> NoGeoid
-            "Constant" -> ConstantGeoid(parseNum(geoidConst) ?: run { error = "Enter the geoid separation in metres"; return null })
-            else -> vm.store.geoidResolver(geoidChoice) ?: run { error = "Geoid grid '$geoidChoice' could not be read"; return null }
-        }
-        error = null
-        val base = CoordinateSystem.utm(z, south, datum, unit, geoid)
-        return if (geoid === NoGeoid) base else base.copy(name = "${base.name} + ${geoid.name}")
     }
 
     ScreenFrame(vm, label("tile.coordinate_systems")) {
@@ -458,25 +437,13 @@ fun CoordinateSystemsScreen(vm: AppViewModel) {
                 }
             }
             Panel {
-                SectionTitle("UTM zone builder")
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    NumField("Zone", zone, { zone = it }, Modifier.weight(1f), keyboard = KeyboardType.Number)
-                    Text("South"); Switch(checked = south, onCheckedChange = { south = it })
-                }
-                Dropdown("Datum", Datum.builtin, datum, { it.name }, { datum = it })
-                Dropdown("Distance units", LinearUnit.entries.toList(), unit, { it.label }, { unit = it })
-                Dropdown("Geoid model", listOf("None", "Constant") + grids, geoidChoice, { it }, { geoidChoice = it })
-                if (geoidChoice == "Constant") NumField("Geoid separation N (m)  (H = h − N)", geoidConst, { geoidConst = it })
-                InfoText("Heights are shown as orthometric (h − N) when a geoid is chosen, otherwise as ellipsoidal heights from the receiver.")
-                error?.let { InfoText(it, color = t.c(ColorRole.BAD)) }
-                ActionBar {
-                    AppButton("Save as custom", { build()?.let { vm.saveCoordSystem(it); vm.message = "Saved ${it.name}" } }, primary = false)
-                    AppButton("Apply to job", { if (vm.job == null) vm.message = "Open a job first" else build()?.let { pendingApply = it } })
-                }
+                SectionTitle("Select from library")
+                InfoText("Pick a system and zone from the built-in library (US State Plane on NAD83(2011), UTM), choose a geoid model, grid or ground coordinates and the distance units.")
+                ActionBar { AppButton("Select from library", { if (vm.job == null) vm.message = "Open a job first" else vm.go("coord_library:job") }) }
             }
             Panel {
                 SectionTitle("Geoid grids")
-                InfoText("Import a geoid as a simple ASCII grid: a header line 'latMin lonMin dLat dLon rows cols', then rows x cols separations in metres (south to north, west to east). Resample any official geoid to this format for your project area.")
+                InfoText("Library geoids (GEOID18 and others) are imported from the library screen as NGS/PROJ .gtx files. Here you can import any other geoid as a simple ASCII grid: a header line 'latMin lonMin dLat dLon rows cols', then rows x cols separations in metres (south to north, west to east). Resample any official geoid to this format for your project area.")
                 TextInput("Name for the grid", geoidName, { geoidName = it })
                 AppButton("Import geoid grid file", { geoidImporter.launch(arrayOf("*/*")) }, Modifier.fillMaxWidth(), primary = false)
                 if (grids.isNotEmpty()) InfoText("Installed: ${grids.joinToString()}")

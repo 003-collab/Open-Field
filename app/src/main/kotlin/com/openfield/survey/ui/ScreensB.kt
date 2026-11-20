@@ -65,7 +65,7 @@ fun StakePointsScreen(vm: AppViewModel) {
     val job = vm.job
     var targetName by remember { mutableStateOf<String?>(null) }
     BackHandler(enabled = targetName != null) { targetName = null }
-    ScreenFrame(vm, label("tile.stake_points"), onBack = { if (targetName != null) targetName = null else vm.back() }) {
+    ScreenFrame(vm, label("tile.stake_points"), onBack = { if (targetName != null) targetName = null else vm.back() }, actions = { if (targetName != null) MapModeButtons(vm) }) {
         if (job == null) { NoJob(vm); return@ScreenFrame }
         @Suppress("UNUSED_VARIABLE") val rev = vm.pointsRev
         val target = targetName?.let { job.find(it) }
@@ -106,7 +106,7 @@ private fun StakeRun(vm: AppViewModel, target: SurveyPoint, onTarget: (SurveyPoi
     val measuring = vm.progress != null
     val pts = job.points
     val idx = pts.indexOfFirst { it.name == target.name }
-    TwoPane(
+    TwoPane(vm,
         left = {
             Panel {
                 Text(target.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
@@ -159,6 +159,7 @@ fun StakeLinesScreen(vm: AppViewModel) {
         onBack = { if (selected != null) selected = null else vm.back() },
         actions = {
             if (selected == null && job != null) IconButton(onClick = { adding = true }) { Icon(Icons.Default.Add, "Add line", tint = t.c(ColorRole.ON_HEADER)) }
+            if (selected != null) MapModeButtons(vm)
         }
     ) {
         if (job == null) { NoJob(vm); return@ScreenFrame }
@@ -198,7 +199,7 @@ private fun LineRun(vm: AppViewModel, line: DesignLine) {
     val tgt = if (st != null && off != null) line.pointAt(st, off) else null
     val tgtZ = tgt?.let { line.locate(it.first, it.second, null).designZ }
     val u = " " + vm.unit.abbr()
-    TwoPane(
+    TwoPane(vm,
         left = {
             Panel {
                 Text(line.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)

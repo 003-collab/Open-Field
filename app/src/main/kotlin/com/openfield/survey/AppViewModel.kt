@@ -6,6 +6,7 @@ import android.os.Looper
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -137,6 +138,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun allCoordSystems(): List<CoordinateSystem> =
         userCoordSystems.toList() + CoordinateSystem.presets + (1..60).map { CoordinateSystem.utm(it, south = true) }
 
+    /** Map / form split shared by the screens that show a map beside their form (Measure points, Continuous topo, Stake out). */
+    var mapMode by mutableStateOf(MapMode.SPLIT)
+    var splitRatio by mutableFloatStateOf(0.5f)
+
+    fun isFavorite(featureId: String) = config.layout.homeTiles.firstOrNull { it.id == featureId }?.favorite == true
+    fun toggleFavorite(featureId: String) = updateConfig { it.copy(layout = it.layout.updateTile(featureId) { t -> t.copy(favorite = !t.favorite) }) }
+
+    /** Receiver position in WGS 84 degrees, or null when there is no position yet. */
+    fun currentLatLon(): Pair<Double, Double>? {
+        val s = snapshot
+        if (s != null && s.hasPosition) return s.latDeg to s.lonDeg
+        return null
+    }
+
     fun updateConfig(f: (UserConfig) -> UserConfig) {
         config = f(config)
         val text = config.toJson()
@@ -243,6 +258,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun antennaMeasuredMetres(): Double? = antennaHeightText.toDoubleOrNull()?.let { unit.toMeters(it) }
 
     // ---------------- jobs ----------------
+    /** The New job screen's draft lives here so the coordinate system picker can be opened and closed without losing it. */
+    var newJobName by mutableStateOf("")
+    var newJobDescription by mutableStateOf("")
+    var newJobSystem by mutableStateOf(CoordinateSystem.utm(18))
+
+    fun beginNewJob() {
+        newJobName = ""; newJobDescription = ""
+        val s = snapshot
+        newJobSystem = if (s != null && s.hasPosition) CoordinateSystem.utm(TransverseMercator.utmZoneFor(s.latDeg, s.lonDeg), s.latDeg < 0) else job?.coordinateSystem?.copy(localization = null, ground = null) ?: CoordinateSystem.utm(18)
+    }
+
     fun createJob(name: String, cs: CoordinateSystem, description: String): String? {
         val n = name.trim()
         if (n.isEmpty()) return "Enter a job name"
@@ -405,7 +431,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val speed = s.speedMps
         if (speed != null && speed >= 0.3 && s.courseDeg != null) headingDeg = s.courseDeg
         val e = engine
-        if (e != null) { e.onSnapshot(s); live = e.live } else live = null
+        if (e == null) { live = null; return }
+        try {
+            e.onSnapshot(s); live = e.live
+        } catch (ex: IllegalArgumentException) {
+            // A geoid grid that does not cover the receiver's position: say so instead of showing a wrong height.
+            live = null
+            val text = ex.message ?: "Position is outside the geoid grid"
+            if (message != text) message = "$text. Install a geoid grid that covers this area (Coordinate systems)."
+        }
     }
 
     fun connect() {
@@ -489,3 +523,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun fmtAngle(deg: Double): String = Angles.format(deg, angleFormat(), 4)
     fun fmtDist(v: Double): String = fmtNum(v, config.distanceDecimals)
 }
+
+/** How a map + form screen divides the display. */
+enum class MapMode { SPLIT, MAP, FORM }

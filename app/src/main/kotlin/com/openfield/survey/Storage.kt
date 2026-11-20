@@ -64,6 +64,7 @@ class Storage(root: File) {
     }
 
     // ---------------- geoid ----------------
+    fun hasGeoid(name: String): Boolean = File(geoidDir, safeName(name) + ".grd").exists()
     fun listGeoids(): List<String> = (geoidDir.listFiles() ?: emptyArray()).filter { it.extension == "grd" }.map { it.nameWithoutExtension }.sorted()
     private fun loadGeoid(name: String): GridGeoid? {
         val f = File(geoidDir, safeName(name) + ".grd")

@@ -41,6 +41,7 @@ import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Place
@@ -104,6 +105,7 @@ import kotlin.math.atan2
 /** One place that maps features to icons, so a missing icon in a future Compose version is a one-line fix. */
 fun featureIcon(id: String): ImageVector = when (id) {
     Feature.JOBS -> Icons.Default.Folder
+    Feature.MAP -> Icons.Default.Map
     Feature.MEASURE_TOPO -> Icons.Default.MyLocation
     Feature.MEASURE_CODES -> Icons.Default.Edit
     Feature.OBSERVED_CONTROL -> Icons.Default.Flag
@@ -348,11 +350,10 @@ fun HomeScreen(vm: AppViewModel) {
 @Composable
 fun JobsScreen(vm: AppViewModel) {
     val t = LocalAppTheme.current
-    var creating by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf<File?>(null) }
     val rev = vm.pointsRev
     ScreenFrame(vm, label("tile.jobs"), actions = {
-        IconButton(onClick = { creating = true }) { Icon(Icons.Default.Add, "New job", tint = t.c(ColorRole.ON_HEADER)) }
+        IconButton(onClick = { vm.beginNewJob(); vm.go("job_new") }) { Icon(Icons.Default.Add, "New job", tint = t.c(ColorRole.ON_HEADER)) }
     }) {
         ScrollBody {
             val current = vm.job
@@ -368,9 +369,9 @@ fun JobsScreen(vm: AppViewModel) {
                     ActionBar { AppButton("Close job", { vm.closeJob() }, primary = false) }
                 }
             }
-            AppButton("New job", { creating = true }, Modifier.fillMaxWidth())
+            AppButton("New job", { vm.beginNewJob(); vm.go("job_new") }, Modifier.fillMaxWidth())
             SectionTitle("Saved jobs")
-            val files = remember(rev, creating) { vm.store.listJobs() }
+            val files = remember(rev) { vm.store.listJobs() }
             if (files.isEmpty()) InfoText("No jobs yet. Create one to start collecting points.")
             files.forEach { f ->
                 Panel(onClick = {
@@ -387,115 +388,91 @@ fun JobsScreen(vm: AppViewModel) {
             }
         }
     }
-    if (creating) NewJobDialog(vm) { creating = false }
     deleting?.let { f ->
         ConfirmDialog("Delete job?", "'${f.nameWithoutExtension}' and all of its points will be deleted from this device.", "Delete", { vm.deleteJob(f) }, { deleting = null })
     }
 }
 
-@Composable
-fun NewJobDialog(vm: AppViewModel, onDismiss: () -> Unit) {
-    val systems = remember { vm.allCoordSystems() }
-    val first = remember {
-        val s = vm.snapshot
-        val guess = if (s != null && s.hasPosition) {
-            val zone = TransverseMercator.utmZoneFor(s.latDeg, s.lonDeg)
-            CoordinateSystem.utm(zone, s.latDeg < 0).name
-        } else null
-        systems.firstOrNull { it.name == guess } ?: systems.first()
-    }
-    var name by remember { mutableStateOf("") }
-    var desc by remember { mutableStateOf("") }
-    var cs by remember { mutableStateOf(first) }
-    var unit by remember { mutableStateOf(first.unit) }
-    var error by remember { mutableStateOf<String?>(null) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("New job") },
-        text = {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextInput("Job name", name, { name = it; error = null }, error = error != null)
-                TextInput("Description (optional)", desc, { desc = it })
-                Dropdown("Coordinate system", systems, cs, { it.name }, { cs = it; unit = it.unit })
-                Dropdown("Distance units", LinearUnit.entries.toList(), unit, { it.label }, { unit = it })
-                InfoText("Geoid, datum shifts and site calibration are set in Coordinate systems and apply to this job's coordinate system.")
-                error?.let { InfoText(it, color = LocalAppTheme.current.c(ColorRole.BAD)) }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = {
-                val err = vm.createJob(name, cs.copy(unit = unit), desc)
-                if (err == null) onDismiss() else error = err
-            }) { Text("Create") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
-    )
-}
-
 // ------------------------------------------------------------------ measure
 
-/** Measure topo, Measure codes and Observed control share one screen; [mode] picks the defaults. */
+/** Measure topo, Measure codes and Observed control share one screen; [mode] picks the defaults. A map sits beside the form (split screen). */
 @Composable
 fun MeasureScreen(vm: AppViewModel, mode: String) {
     val job = vm.job
-    ScreenFrame(vm, label("tile.$mode")) {
-        if (job == null) { NoJob(vm); return@ScreenFrame }
-        val t = LocalAppTheme.current
-        val rev = vm.pointsRev
-        val style = vm.activeStyle
-        val control = mode == Feature.OBSERVED_CONTROL
-        var name by remember(rev, job.name) { mutableStateOf(job.freeName()) }
-        var code by remember { mutableStateOf("") }
-        var note by remember { mutableStateOf("") }
-        var epochsText by remember(control, style.id) { mutableStateOf((if (control) style.controlEpochs else style.topoEpochs).toString()) }
-        val measuring = vm.progress != null
-        val taken = name.isNotBlank() && job.has(name)
+    val t = LocalAppTheme.current
+    val rev = vm.pointsRev
+    val style = vm.activeStyle
+    var control by remember(mode) { mutableStateOf(mode == Feature.OBSERVED_CONTROL) }
+    var name by remember(rev, job?.name) { mutableStateOf(job?.freeName() ?: "") }
+    var code by remember { mutableStateOf("") }
+    var note by remember { mutableStateOf("") }
+    var epochsText by remember(control, style.id) { mutableStateOf((if (control) style.controlEpochs else style.topoEpochs).toString()) }
+    var showOptions by remember { mutableStateOf(false) }
+    val measuring = vm.progress != null
+    val taken = job != null && name.isNotBlank() && job.has(name)
 
+    fun measureNow() {
+        val h = vm.antennaMeasuredMetres()
+        if (h == null) { vm.message = "Enter the antenna height"; return }
+        val err = vm.startMeasure(
+            MeasureSpec(
+                name = name.trim().ifEmpty { null }, code = code.trim(),
+                method = if (control) MeasureMethod.OBSERVED_CONTROL else MeasureMethod.TOPO,
+                epochs = epochsText.toIntOrNull()?.coerceAtLeast(1),
+                antennaHeightMeasured = h, heightMethod = vm.antennaMethod, note = note
+            )
+        )
+        if (err != null) vm.message = err
+    }
+
+    ScreenFrame(
+        vm, label("tile.$mode"), actions = { MapModeButtons(vm) },
+        softKeys = listOf(
+            SoftKey("Esc", { if (measuring) vm.cancelMeasure() else vm.back() }),
+            SoftKey("GNSS", { vm.go(Feature.GNSS_STATUS) }),
+            if (measuring) SoftKey("Store now", { vm.finishMeasureEarly() }) else SoftKey("Options", { showOptions = true }, enabled = job != null),
+            SoftKey(if (measuring) "Measuring" else label("action.measure"), { measureNow() }, enabled = job != null && !measuring && vm.live != null && !taken && vm.antennaError == null, primary = true)
+        )
+    ) {
+        if (job == null) { NoJob(vm); return@ScreenFrame }
         TwoPane(
+            vm,
             left = {
-                PositionPanel(vm)
-                Panel {
-                    TextInput(label("point.name"), name, { name = it }, error = taken, enabled = !measuring)
-                    if (taken) InfoText("A point with this name already exists", color = t.c(ColorRole.BAD))
-                    TextInput(label("point.code"), code, { code = it }, enabled = !measuring)
-                    if (mode == Feature.MEASURE_CODES || code.isNotEmpty()) {
-                        val matches = vm.featureCodes.let { lib -> if (code.isBlank()) lib.codes else lib.search(code) }.take(24)
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            matches.forEach { fc ->
-                                FilterChip(selected = fc.code.equals(code, true), onClick = { code = fc.code }, label = { Text(fc.code) })
-                            }
+                FormHeader(label("tile.$mode"), vm.isFavorite(mode)) { vm.toggleFavorite(mode) }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextInput(label("point.name"), name, { name = it }, Modifier.weight(1f), error = taken, enabled = !measuring)
+                    TextInput(label("point.code"), code, { code = it }, Modifier.weight(1f), enabled = !measuring)
+                }
+                if (taken) InfoText("A point with this name already exists", color = t.c(ColorRole.BAD))
+                if (mode == Feature.MEASURE_CODES || code.isNotEmpty()) {
+                    val matches = vm.featureCodes.let { lib -> if (code.isBlank()) lib.codes else lib.search(code) }.take(24)
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        matches.forEach { fc ->
+                            FilterChip(selected = fc.code.equals(code, true), onClick = { code = fc.code }, label = { Text(fc.code) })
                         }
                     }
-                    NumField("Epochs to average", epochsText, { epochsText = it }, keyboard = androidx.compose.ui.text.input.KeyboardType.Number, enabled = !measuring)
-                    TextInput("Note (optional)", note, { note = it }, enabled = !measuring)
                 }
+                Dropdown("Method", listOf(false, true), control, { if (it) "Observed control point" else "Topo point" }, { control = it })
                 AntennaEditor(vm)
                 MeasureProgressPanel(vm)
-                ActionBar {
-                    if (measuring) {
-                        AppButton("Cancel", { vm.cancelMeasure() }, primary = false)
-                        AppButton("Store now", { vm.finishMeasureEarly() }, color = t.c(ColorRole.ACCENT))
-                    } else {
-                        AppButton(label("action.measure"), {
-                            val h = vm.antennaMeasuredMetres()
-                            if (h == null) vm.message = "Enter the antenna height" else {
-                                val err = vm.startMeasure(
-                                    MeasureSpec(
-                                        name = name.trim().ifEmpty { null }, code = code.trim(),
-                                        method = if (control) MeasureMethod.OBSERVED_CONTROL else MeasureMethod.TOPO,
-                                        epochs = epochsText.toIntOrNull()?.coerceAtLeast(1),
-                                        antennaHeightMeasured = h, heightMethod = vm.antennaMethod, note = note
-                                    )
-                                )
-                                if (err != null) vm.message = err
-                            }
-                        }, enabled = vm.live != null && !taken && vm.antennaError == null)
-                    }
-                }
+                PositionPanel(vm)
             },
             right = { m ->
-                PlanView(job.points, vm.featureCodes, vm.live?.ground?.let { it.e to it.n }, null, m)
+                PlanView(job.points, vm.featureCodes, vm.live?.ground?.let { it.e to it.n }, null, m, job.lines)
             }
+        )
+    }
+    if (showOptions) {
+        AlertDialog(
+            onDismissRequest = { showOptions = false }, title = { Text("Options") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    NumField("Epochs to average", epochsText, { epochsText = it }, keyboard = androidx.compose.ui.text.input.KeyboardType.Number)
+                    TextInput("Note (optional)", note, { note = it })
+                    InfoText("Quality limits (solution, HDOP, precision) come from the survey style: ${style.name}.")
+                }
+            },
+            confirmButton = { TextButton(onClick = { showOptions = false }) { Text("OK") } }
         )
     }
 }
@@ -503,31 +480,33 @@ fun MeasureScreen(vm: AppViewModel, mode: String) {
 @Composable
 fun ContinuousScreen(vm: AppViewModel) {
     val job = vm.job
-    ScreenFrame(vm, label("tile.continuous_topo")) {
+    @Suppress("UNUSED_VARIABLE") val rev = vm.pointsRev   // reading it subscribes this screen to point changes
+    val style = vm.activeStyle
+    var code by remember { mutableStateOf("") }
+    val t = LocalAppTheme.current
+    fun start() { val err = vm.startContinuous(code.trim()); if (err != null) vm.message = err }
+    ScreenFrame(
+        vm, label("tile.continuous_topo"), actions = { MapModeButtons(vm) },
+        softKeys = listOf(
+            SoftKey("Esc", { if (vm.continuousOn) vm.stopContinuous() else vm.back() }),
+            SoftKey("GNSS", { vm.go(Feature.GNSS_STATUS) }),
+            if (vm.continuousOn) SoftKey("Stop", { vm.stopContinuous() }, primary = true)
+            else SoftKey("Start", { start() }, enabled = job != null && vm.live != null && vm.antennaError == null, primary = true)
+        )
+    ) {
         if (job == null) { NoJob(vm); return@ScreenFrame }
-        @Suppress("UNUSED_VARIABLE") val rev = vm.pointsRev   // reading it subscribes this screen to point changes
-        val style = vm.activeStyle
-        var code by remember { mutableStateOf("") }
-        val t = LocalAppTheme.current
         TwoPane(
+            vm,
             left = {
-                PositionPanel(vm)
-                Panel {
-                    TextInput(label("point.code"), code, { code = it }, enabled = !vm.continuousOn)
-                    val unitText = if (style.continuousMode == com.openfield.core.survey.ContinuousMode.TIME) "every ${style.continuousInterval} s" else "every ${style.continuousInterval} ${vm.unit.abbr()}"
-                    InfoText("Stores a point $unitText while the receiver meets the survey style's quality limits. Change this in Survey styles.")
-                    if (vm.continuousOn) KeyValue("Points in job", job.points.size.toString())
-                }
+                FormHeader(label("tile.continuous_topo"), vm.isFavorite(Feature.CONTINUOUS_TOPO)) { vm.toggleFavorite(Feature.CONTINUOUS_TOPO) }
+                TextInput(label("point.code"), code, { code = it }, enabled = !vm.continuousOn)
+                val unitText = if (style.continuousMode == com.openfield.core.survey.ContinuousMode.TIME) "every ${style.continuousInterval} s" else "every ${style.continuousInterval} ${vm.unit.abbr()}"
+                InfoText("Stores a point $unitText while the receiver meets the survey style's quality limits. Change this in Survey styles.")
+                if (vm.continuousOn) KeyValue("Points in job", job.points.size.toString())
                 AntennaEditor(vm)
-                ActionBar {
-                    if (vm.continuousOn) AppButton("Stop", { vm.stopContinuous() }, color = t.c(ColorRole.BAD))
-                    else AppButton("Start", {
-                        val err = vm.startContinuous(code.trim())
-                        if (err != null) vm.message = err
-                    }, enabled = vm.live != null && vm.antennaError == null)
-                }
+                PositionPanel(vm)
             },
-            right = { m -> PlanView(job.points, vm.featureCodes, vm.live?.ground?.let { it.e to it.n }, null, m) }
+            right = { m -> PlanView(job.points, vm.featureCodes, vm.live?.ground?.let { it.e to it.n }, null, m, job.lines) }
         )
     }
 }

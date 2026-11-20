@@ -1,6 +1,34 @@
 package com.openfield.survey.ui
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Label
+import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.ZoomIn
+import androidx.compose.material.icons.filled.ZoomOut
+import androidx.compose.material.icons.filled.ZoomOutMap
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableDoubleStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontWeight
+import com.openfield.survey.fmtNum
+import kotlin.math.floor
+import kotlin.math.hypot
+import kotlin.math.log10
+import kotlin.math.pow
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -49,8 +77,36 @@ private fun android.graphics.Paint.textFor(color: Color, sizePx: Float, bold: Bo
     return this
 }
 
+/** Short unit text for the scale bar ("m", "sft"); provided once at the root from the open job. */
+val LocalUnitLabel = staticCompositionLocalOf { "" }
+
+private class MapState {
+    var cx by mutableDoubleStateOf(0.0)
+    var cy by mutableDoubleStateOf(0.0)
+    var scale by mutableDoubleStateOf(1.0)          // pixels per job unit
+    var follow by mutableStateOf(false)
+    var labels by mutableStateOf(true)
+    var selected by mutableStateOf<String?>(null)
+    var width by mutableIntStateOf(0)
+    var height by mutableIntStateOf(0)
+
+    fun sx(e: Double) = width / 2f + ((e - cx) * scale).toFloat()
+    fun sy(n: Double) = height / 2f - ((n - cy) * scale).toFloat()
+
+    fun fit(xs: List<Double>, ys: List<Double>) {
+        if (xs.isEmpty() || width == 0 || height == 0) return
+        val minX = xs.min(); val maxX = xs.max(); val minY = ys.min(); val maxY = ys.max()
+        cx = (minX + maxX) / 2; cy = (minY + maxY) / 2
+        val spanX = max(maxX - minX, 10.0) * 1.3; val spanY = max(maxY - minY, 10.0) * 1.3
+        scale = min(width / spanX, height / spanY)
+    }
+
+    fun zoomBy(f: Double) { scale = (scale * f).coerceIn(1e-3, 1e5) }
+}
+
 /**
- * Plan (top-down) view of the job. Tap to cycle zoom: fit everything, follow the receiver at ~25 units, follow at ~100 units.
+ * Interactive plan (top-down, north up) view of the job: drag to pan, pinch or use the toolbar to zoom, double-tap to zoom to extents,
+ * tap a point to see its details. The toolbar (zoom in/out, extents, follow receiver, labels) sits on the left like a controller's map.
  * Coordinates are in the job's unit; [current] and [target] are (easting, northing).
  */
 @Composable
@@ -60,10 +116,12 @@ fun PlanView(
     current: Pair<Double, Double>?,
     target: Pair<Double, Double>?,
     modifier: Modifier = Modifier,
-    lines: List<DesignLine> = emptyList()
+    lines: List<DesignLine> = emptyList(),
+    toolbar: Boolean = true,
+    onPointTap: ((SurveyPoint) -> Unit)? = null
 ) {
     val t = LocalAppTheme.current
-    var zoom by remember { mutableIntStateOf(0) }
+    val st = remember { MapState() }
     val paint = remember { android.graphics.Paint() }
     val surface = t.c(ColorRole.SURFACE)
     val outline = t.c(ColorRole.OUTLINE)
@@ -71,64 +129,141 @@ fun PlanView(
     val accent = t.c(ColorRole.ACCENT)
     val bad = t.c(ColorRole.BAD)
     val primary = t.c(ColorRole.PRIMARY)
-    val shape = RoundedCornerShape(t.cornerRadiusDp.dp)
+    val unitLabel = LocalUnitLabel.current
+    val currentState = rememberUpdatedState(current)
+    val pointsState = rememberUpdatedState(points)
+    val linesState = rememberUpdatedState(lines)
+    val targetState = rememberUpdatedState(target)
 
-    Box(modifier.clip(shape).background(surface).border(1.dp, outline, shape).clickable { zoom = (zoom + 1) % 3 }) {
+    fun extents() {
+        val xs = ArrayList<Double>(); val ys = ArrayList<Double>()
+        pointsState.value.forEach { xs.add(it.e); ys.add(it.n) }
+        linesState.value.forEach { xs.add(it.e1); ys.add(it.n1); xs.add(it.e2); ys.add(it.n2) }
+        currentState.value?.let { xs.add(it.first); ys.add(it.second) }
+        targetState.value?.let { xs.add(it.first); ys.add(it.second) }
+        st.fit(xs, ys)
+    }
+
+    // fit when the pane first gets a size, when it is resized, and when a different stake-out target is chosen
+    LaunchedEffect(st.width, st.height, target) { st.follow = false; extents() }
+    LaunchedEffect(current, st.follow) { if (st.follow && current != null) { st.cx = current.first; st.cy = current.second } }
+
+    Box(
+        modifier.clip(RoundedCornerShape(t.cornerRadiusDp.dp)).background(surface).border(1.dp, outline, RoundedCornerShape(t.cornerRadiusDp.dp))
+            .onSizeChanged { st.width = it.width; st.height = it.height }
+            .pointerInput(Unit) {
+                detectTransformGestures { centroid, pan, zoom, _ ->
+                    st.follow = false
+                    val w = st.width; val h = st.height
+                    val old = st.scale
+                    val ns = (old * zoom).coerceIn(1e-3, 1e5)
+                    val wx = st.cx + (centroid.x - w / 2) / old
+                    val wy = st.cy - (centroid.y - h / 2) / old
+                    st.scale = ns
+                    st.cx = wx - (centroid.x - w / 2) / ns - pan.x / ns
+                    st.cy = wy + (centroid.y - h / 2) / ns + pan.y / ns
+                }
+            }
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onDoubleTap = { st.follow = false; extents() },
+                    onTap = { o ->
+                        var best: SurveyPoint? = null; var bd = 28.dp.toPx()
+                        for (p in pointsState.value) {
+                            val d = hypot(st.sx(p.e) - o.x, st.sy(p.n) - o.y)
+                            if (d < bd) { bd = d; best = p }
+                        }
+                        st.selected = best?.name
+                        best?.let { onPointTap?.invoke(it) }
+                    }
+                )
+            }
+    ) {
         Canvas(Modifier.fillMaxSize()) {
-            val xs = ArrayList<Double>(); val ys = ArrayList<Double>()
-            if (zoom == 0 || current == null) {
-                points.forEach { xs.add(it.e); ys.add(it.n) }
-                lines.forEach { xs.add(it.e1); ys.add(it.n1); xs.add(it.e2); ys.add(it.n2) }
-                current?.let { xs.add(it.first); ys.add(it.second) }
-                target?.let { xs.add(it.first); ys.add(it.second) }
-            } else {
-                val r = if (zoom == 1) 25.0 else 100.0
-                xs.add(current.first - r); xs.add(current.first + r); ys.add(current.second - r); ys.add(current.second + r)
+            val w = size.width; val h = size.height
+            if (points.isEmpty() && lines.isEmpty() && current == null) {
+                drawIntoCanvas { it.nativeCanvas.drawText("No points yet", 72.dp.toPx(), h / 2, paint.textFor(onSurface.copy(alpha = 0.6f), 14.sp.toPx())) }
             }
-            if (xs.isEmpty()) {
-                drawIntoCanvas { it.nativeCanvas.drawText("No points yet", 16.dp.toPx(), size.height / 2, paint.textFor(onSurface.copy(alpha = 0.6f), 14.sp.toPx())) }
-                return@Canvas
-            }
-            val minX = xs.min(); val maxX = xs.max(); val minY = ys.min(); val maxY = ys.max()
-            val span = max(max(maxX - minX, maxY - minY), 1.0) * 1.25
-            val scale = (min(size.width, size.height) / span).toFloat()
-            val cx = (minX + maxX) / 2; val cy = (minY + maxY) / 2
-            fun sx(e: Double) = size.width / 2 + ((e - cx) * scale).toFloat()
-            fun sy(n: Double) = size.height / 2 - ((n - cy) * scale).toFloat()
-
-            for (l in lines) drawLine(accent, Offset(sx(l.e1), sy(l.n1)), Offset(sx(l.e2), sy(l.n2)), strokeWidth = 2.dp.toPx())
+            for (l in lines) drawLine(accent, Offset(st.sx(l.e1), st.sy(l.n1)), Offset(st.sx(l.e2), st.sy(l.n2)), strokeWidth = 2.dp.toPx())
             val labelPaint = paint.textFor(onSurface, 11.sp.toPx())
-            val showLabels = points.size <= 80 || zoom != 0
             for (p in points) {
-                val x = sx(p.e); val y = sy(p.n)
-                if (x < -20 || y < -20 || x > size.width + 20 || y > size.height + 20) continue
+                val x = st.sx(p.e); val y = st.sy(p.n)
+                if (x < -20 || y < -20 || x > w + 20 || y > h + 20) continue
                 val col = codes.find(p.code)?.let { parseColor(it.colorHex) } ?: when (p.kind) {
                     PointKind.DESIGN -> accent; PointKind.CONTROL -> bad; else -> primary
                 }
                 if (p.kind == PointKind.DESIGN) drawCircle(col, 6.dp.toPx(), Offset(x, y), style = Stroke(2.dp.toPx())) else drawCircle(col, 4.dp.toPx(), Offset(x, y))
-                if (showLabels) drawIntoCanvas { it.nativeCanvas.drawText(p.name, x + 7.dp.toPx(), y - 5.dp.toPx(), labelPaint) }
+                if (p.name == st.selected) drawCircle(accent, 10.dp.toPx(), Offset(x, y), style = Stroke(2.5f.dp.toPx()))
+                if (st.labels && (points.size <= 120 || st.scale > 0.5)) drawIntoCanvas { it.nativeCanvas.drawText(p.name, x + 7.dp.toPx(), y - 5.dp.toPx(), labelPaint) }
             }
             if (target != null) {
-                val tx = sx(target.first); val ty = sy(target.second)
-                if (current != null) drawLine(bad.copy(alpha = 0.6f), Offset(sx(current.first), sy(current.second)), Offset(tx, ty), strokeWidth = 2.dp.toPx())
+                val tx = st.sx(target.first); val ty = st.sy(target.second)
+                if (current != null) drawLine(bad.copy(alpha = 0.6f), Offset(st.sx(current.first), st.sy(current.second)), Offset(tx, ty), strokeWidth = 2.dp.toPx())
                 drawCircle(bad, 9.dp.toPx(), Offset(tx, ty), style = Stroke(3.dp.toPx()))
                 drawCircle(bad, 2.dp.toPx(), Offset(tx, ty))
             }
             if (current != null) {
-                val x = sx(current.first); val y = sy(current.second)
+                val x = st.sx(current.first); val y = st.sy(current.second)
                 val arm = 14.dp.toPx()
                 drawCircle(accent, 7.dp.toPx(), Offset(x, y), style = Stroke(3.dp.toPx()))
                 drawLine(accent, Offset(x - arm, y), Offset(x + arm, y), strokeWidth = 2.dp.toPx())
                 drawLine(accent, Offset(x, y - arm), Offset(x, y + arm), strokeWidth = 2.dp.toPx())
             }
-            // north arrow
-            drawIntoCanvas { it.nativeCanvas.drawText("N ↑", size.width - 34.dp.toPx(), 20.dp.toPx(), paint.textFor(onSurface, 14.sp.toPx(), bold = true)) }
+            // north arrow, top right
+            val nx = w - 28.dp.toPx(); val ny = 14.dp.toPx()
+            drawLine(onSurface, Offset(nx, ny + 26.dp.toPx()), Offset(nx, ny), strokeWidth = 2.dp.toPx())
+            drawLine(onSurface, Offset(nx, ny), Offset(nx - 5.dp.toPx(), ny + 9.dp.toPx()), strokeWidth = 2.dp.toPx())
+            drawLine(onSurface, Offset(nx, ny), Offset(nx + 5.dp.toPx(), ny + 9.dp.toPx()), strokeWidth = 2.dp.toPx())
+            drawIntoCanvas { it.nativeCanvas.drawText("N", nx - 5.dp.toPx(), ny + 44.dp.toPx(), paint.textFor(onSurface, 14.sp.toPx(), bold = true)) }
+            // scale bar, bottom right: the longest 1/2/5 x 10^n length that fits in about 90 dp
+            if (st.scale > 0) {
+                val raw = 90.dp.toPx() / st.scale
+                val mag = 10.0.pow(floor(log10(raw))); val m = raw / mag
+                val nice = (if (m >= 5) 5.0 else if (m >= 2) 2.0 else 1.0) * mag
+                val len = (nice * st.scale).toFloat()
+                val x2 = w - 16.dp.toPx(); val x1 = x2 - len; val y = h - 16.dp.toPx()
+                drawLine(onSurface, Offset(x1, y), Offset(x2, y), strokeWidth = 2.dp.toPx())
+                drawLine(onSurface, Offset(x1, y - 5.dp.toPx()), Offset(x1, y), strokeWidth = 2.dp.toPx())
+                drawLine(onSurface, Offset(x2, y - 5.dp.toPx()), Offset(x2, y), strokeWidth = 2.dp.toPx())
+                val text = (if (nice >= 1) nice.toLong().toString() else nice.toString()) + unitLabel
+                val tp = paint.textFor(onSurface, 12.sp.toPx())
+                drawIntoCanvas { it.nativeCanvas.drawText(text, x2 - tp.measureText(text), y - 9.dp.toPx(), tp) }
+            }
         }
-        val zoomText = when (zoom) { 0 -> "Fit"; 1 -> "Follow ± 25"; else -> "Follow ± 100" }
-        Text(
-            "$zoomText  (tap)", modifier = Modifier.align(Alignment.BottomStart).padding(6.dp),
-            style = MaterialTheme.typography.labelSmall, color = onSurface.copy(alpha = 0.6f)
-        )
+        if (toolbar) {
+            Surface(
+                Modifier.align(Alignment.TopStart).padding(6.dp), color = surface.copy(alpha = 0.92f),
+                shape = RoundedCornerShape(t.cornerRadiusDp.dp), border = BorderStroke(1.dp, outline), shadowElevation = 2.dp
+            ) {
+                Column {
+                    MapTool(Icons.Default.ZoomIn, "Zoom in") { st.zoomBy(1.6) }
+                    MapTool(Icons.Default.ZoomOut, "Zoom out") { st.zoomBy(1 / 1.6) }
+                    MapTool(Icons.Default.ZoomOutMap, "Zoom to extents") { st.follow = false; extents() }
+                    MapTool(Icons.Default.MyLocation, "Follow position", active = st.follow, enabled = current != null) { st.follow = !st.follow }
+                    MapTool(Icons.Default.Label, "Point names", active = st.labels) { st.labels = !st.labels }
+                }
+            }
+        }
+        val sel = points.firstOrNull { it.name == st.selected }
+        if (sel != null) {
+            Surface(
+                Modifier.align(Alignment.BottomStart).padding(6.dp), color = surface.copy(alpha = 0.95f),
+                shape = RoundedCornerShape(t.cornerRadiusDp.dp), border = BorderStroke(1.dp, outline), shadowElevation = 2.dp
+            ) {
+                Column(Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
+                    Text(sel.name + if (sel.code.isNotBlank()) "  ${sel.code}" else "", fontWeight = FontWeight.Bold, color = onSurface)
+                    Text("N ${fmtNum(sel.n, 3)}   E ${fmtNum(sel.e, 3)}   Z ${fmtNum(sel.z, 3)}", style = MaterialTheme.typography.bodySmall, color = onSurface)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MapTool(icon: ImageVector, description: String, active: Boolean = false, enabled: Boolean = true, onClick: () -> Unit) {
+    val t = LocalAppTheme.current
+    IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(44.dp * LocalTouch.current)) {
+        Icon(icon, description, tint = if (active) t.c(ColorRole.ACCENT) else t.c(ColorRole.ON_SURFACE).copy(alpha = if (enabled) 1f else 0.35f))
     }
 }
 

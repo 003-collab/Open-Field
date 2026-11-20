@@ -82,6 +82,7 @@ data class ThemeSpec(
 /** Every screen reachable from the home menu. Users reorder, hide or favourite these. */
 object Feature {
     const val JOBS = "jobs"
+    const val MAP = "map"
     const val MEASURE_TOPO = "measure_topo"
     const val MEASURE_CODES = "measure_codes"
     const val OBSERVED_CONTROL = "observed_control"
@@ -100,14 +101,14 @@ object Feature {
     const val FEATURE_CODES = "feature_codes"
     const val APPEARANCE = "appearance"
 
-    val all = listOf(JOBS, MEASURE_TOPO, MEASURE_CODES, OBSERVED_CONTROL, CONTINUOUS_TOPO, STAKE_POINTS, STAKE_LINES, COGO, CALIBRATION,
+    val all = listOf(JOBS, MAP, MEASURE_TOPO, MEASURE_CODES, OBSERVED_CONTROL, CONTINUOUS_TOPO, STAKE_POINTS, STAKE_LINES, COGO, CALIBRATION,
         REVIEW_JOB, IMPORT_EXPORT, GNSS_STATUS, EQUIPMENT, REALTIME, SURVEY_STYLES, COORDINATE_SYSTEMS, FEATURE_CODES, APPEARANCE)
 
     enum class Group(val labelKey: String) { JOB("group.job"), SURVEY("group.survey"), STAKEOUT("group.stakeout"), TOOLS("group.tools"), SETTINGS("group.settings") }
 
     fun group(id: String) = when (id) {
         JOBS, REVIEW_JOB, IMPORT_EXPORT -> Group.JOB
-        MEASURE_TOPO, MEASURE_CODES, OBSERVED_CONTROL, CONTINUOUS_TOPO -> Group.SURVEY
+        MAP, MEASURE_TOPO, MEASURE_CODES, OBSERVED_CONTROL, CONTINUOUS_TOPO -> Group.SURVEY
         STAKE_POINTS, STAKE_LINES -> Group.STAKEOUT
         COGO, CALIBRATION, GNSS_STATUS -> Group.TOOLS
         else -> Group.SETTINGS
@@ -196,7 +197,7 @@ class Labels(private val overrides: Map<String, String> = emptyMap()) {
     companion object {
         val defaults: Map<String, String> = linkedMapOf(
             "group.job" to "Job", "group.survey" to "Measure", "group.stakeout" to "Stake out", "group.tools" to "Tools", "group.settings" to "Settings",
-            "tile.jobs" to "Jobs", "tile.measure_topo" to "Measure topo", "tile.measure_codes" to "Measure codes",
+            "tile.jobs" to "Jobs", "tile.map" to "Map", "tile.measure_topo" to "Measure topo", "tile.measure_codes" to "Measure codes",
             "tile.observed_control" to "Observed control point", "tile.continuous_topo" to "Continuous topo",
             "tile.stake_points" to "Points", "tile.stake_lines" to "Lines", "tile.cogo" to "Cogo", "tile.calibration" to "Calibration",
             "tile.review_job" to "Review job", "tile.import_export" to "Import / Export", "tile.gnss_status" to "GNSS status",
